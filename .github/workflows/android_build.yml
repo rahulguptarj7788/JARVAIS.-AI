@@ -57,4 +57,3 @@ jobs:
         with:
           name: JarvisAI-APK
           path: bin/*.apk
-
