@@ -28,6 +28,12 @@ jobs:
           pip install --upgrade pip
           pip install buildozer cython==0.29.33
 
+      - name: Accept Android SDK Licenses & Prepare Environment
+        run: |
+          mkdir -p ~/.android
+          touch ~/.android/repositories.cfg
+          yes | buildozer android debug || true
+
       - name: Build APK with Buildozer
         env:
           GROQ_API_KEY_1: ${{ secrets.GROQ_API_KEY_1 }}
@@ -44,7 +50,7 @@ jobs:
           ONEDRIVE_CLIENT_SECRET: ${{ secrets.ONEDRIVE_CLIENT_SECRET }}
           ONEDRIVE_REFRESH_TOKEN: ${{ secrets.ONEDRIVE_REFRESH_TOKEN }}
         run: |
-          buildozer -s android debug
+          yes | buildozer -s android debug
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
