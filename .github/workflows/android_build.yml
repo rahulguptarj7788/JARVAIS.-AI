@@ -1,0 +1,54 @@
+name: Build Jarvis AI Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install System Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ccache git python3-pip build-essential libltdl-dev libffi-dev libssl-dev ffmpeg autoconf automake libtool unzip zip zlib1g-dev openjdk-17-jdk
+
+    - name: Install Buildozer and Kivy
+      run: |
+        pip install --upgrade pip
+        pip install buildozer cython==0.29.33
+
+    - name: Build APK with Buildozer
+      env:
+        GROQ_API_KEY_1: ${{ secrets.GROQ_API_KEY_1 }}
+        GROQ_API_KEY_2: ${{ secrets.GROQ_API_KEY_2 }}
+        GEMINI_API_KEY_1: ${{ secrets.GEMINI_API_KEY_1 }}
+        GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
+        OPENROUTER_API_KEY_1: ${{ secrets.OPENROUTER_API_KEY_1 }}
+        OPENROUTER_API_KEY_2: ${{ secrets.OPENROUTER_API_KEY_2 }}
+        CEREBRAS_API_KEY_1: ${{ secrets.CEREBRAS_API_KEY_1 }}
+        CEREBRAS_API_KEY_2: ${{ secrets.CEREBRAS_API_KEY_2 }}
+        PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+        PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+        ONEDRIVE_CLIENT_ID: ${{ secrets.ONEDRIVE_CLIENT_ID }}
+        ONEDRIVE_CLIENT_SECRET: ${{ secrets.ONEDRIVE_CLIENT_SECRET }}
+        ONEDRIVE_REFRESH_TOKEN: ${{ secrets.ONEDRIVE_REFRESH_TOKEN }}
+      run: |
+        buildozer -s android debug
+
+    - name: Upload APK Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: JarvisAI-APK
+        path: bin/*.apk
+
