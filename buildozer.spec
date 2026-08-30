@@ -11,6 +11,7 @@ orientation = portrait
 fullscreen = 0
 android.permissions = RECORD_AUDIO, FOREGROUND_SERVICE, FOREGROUND_SERVICE_MICROPHONE, SYSTEM_ALERT_WINDOW, POST_NOTIFICATIONS, ACCESS_NETWORK_STATE, ACCESS_WIFI_STATE
 android.api = 33
+android.build_tools = 33.0.2
 android.minapi = 24
 android.ndk = 25b
 android.private_storage = True
