@@ -23,16 +23,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ccache git python3-pip build-essential libltdl-dev libffi-dev libssl-dev ffmpeg autoconf automake libtool unzip zip zlib1g-dev openjdk-17-jdk
 
-      - name: Install Buildozer and Kivy
+      - name: Install Buildozer and Dependencies
         run: |
           pip install --upgrade pip
-          pip install buildozer cython==0.29.33
-
-      - name: Accept Android SDK Licenses & Prepare Environment
-        run: |
-          mkdir -p ~/.android
-          touch ~/.android/repositories.cfg
-          yes | buildozer android debug || true
+          pip install buildozer "cython<3.0.0"
 
       - name: Build APK with Buildozer
         env:
