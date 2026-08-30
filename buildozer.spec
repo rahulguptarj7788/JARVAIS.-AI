@@ -6,7 +6,7 @@ source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,xml,json,java
 source.include_patterns = assets/*,*.xml
 version = 1.0.0
-requirements = python3==3.10.12,kivy==2.3.0,requests,urllib3,certifi,pyjnius,edge-tts,onnxruntime
+requirements = python3,kivy,requests,urllib3,certifi,pyjnius
 orientation = portrait
 fullscreen = 0
 android.permissions = RECORD_AUDIO, FOREGROUND_SERVICE, FOREGROUND_SERVICE_MICROPHONE, SYSTEM_ALERT_WINDOW, POST_NOTIFICATIONS, ACCESS_NETWORK_STATE, ACCESS_WIFI_STATE, BIND_ACCESSIBILITY_SERVICE
@@ -21,4 +21,5 @@ android.services = JarvisWakewordService:services.py, JarvisWatchdogService:serv
 [buildozer]
 log_level = 2
 warn_on_root = 1
+android.accept_sdk_licenses = True
 
