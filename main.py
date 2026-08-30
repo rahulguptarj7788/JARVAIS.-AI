@@ -3,13 +3,13 @@ import sys
 import sqlite3
 import json
 import requests
+import threading
 from kivy.app import App
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.label import Label
 from kivy.uix.textinput import TextInput
 from kivy.uix.button import Button
-from kivy.uix.popup import Popup
 from kivy.clock import Clock
 from kivy.graphics import Color, Ellipse
 
@@ -18,7 +18,7 @@ SETTINGS_PASS = "18112023"
 
 class DatabaseManager:
     def __init__(self):
-        self.conn = sqlite3.connect("jarvis_local.db")
+        self.conn = sqlite3.connect("jarvis_local.db", check_same_thread=False)
         self.create_tables()
 
     def create_tables(self):
@@ -50,14 +50,13 @@ class SmartAIRouter:
         self.gemini_keys = [os.environ.get("GEMINI_API_KEY_1"), os.environ.get("GEMINI_API_KEY_2")]
         self.openrouter_keys = [os.environ.get("OPENROUTER_API_KEY_1"), os.environ.get("OPENROUTER_API_KEY_2")]
         self.cerebras_keys = [os.environ.get("CEREBRAS_API_KEY_1"), os.environ.get("CEREBRAS_API_KEY_2")]
-        self.pixabay_key = os.environ.get("PIXABAY_API_KEY")
-        self.pexels_key = os.environ.get("PEXELS_API_KEY")
         self.active_index = 0
 
     def query_groq(self, prompt):
-        key = self.groq_keys[self.active_index % len(self.groq_keys)]
-        if not key:
+        keys = [k for k in self.groq_keys if k]
+        if not keys:
             return None
+        key = keys[self.active_index % len(keys)]
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
         payload = {
@@ -65,7 +64,7 @@ class SmartAIRouter:
             "messages": [{"role": "user", "content": prompt}]
         }
         try:
-            res = requests.post(url, json=payload, timeout=5)
+            res = requests.post(url, json=payload, timeout=8)
             if res.status_code == 200:
                 return res.json()["choices"][0]["message"]["content"]
         except Exception:
@@ -76,7 +75,7 @@ class SmartAIRouter:
         res = self.query_groq(prompt)
         if res:
             return res
-        return "ऑफ़लाइन मोड: लोकल मैथ और मैक्रो सिस्टम एक्टिव है।"
+        return "ऑफ़लाइन मोड: लोकल मैक्रो एवं कैलकुलेशन इंजन एक्टिव है।"
 
 class PurpleBubbleOverlay(FloatLayout):
     def __init__(self, **kwargs):
@@ -108,7 +107,6 @@ class JarvisUI(BoxLayout):
         self.db = DatabaseManager()
         self.router = SmartAIRouter()
         self.authenticated = False
-        self.whisper_mode = False
         self.silent_mode = False
 
         self.status_label = Label(
@@ -144,34 +142,35 @@ class JarvisUI(BoxLayout):
             self.authenticated = True
             self.remove_widget(self.pass_input)
             self.remove_widget(self.submit_btn)
-            self.status_label.text = "Jarvis AI Ready | Multi-Routing Active"
+            self.status_label.text = "Jarvis AI Ready | Multi-Routing & Accessibility Active"
             self.add_widget(self.chat_display)
             self.add_widget(PurpleBubbleOverlay())
         else:
             self.status_label.text = "गलत पासवर्ड! पुन: प्रयास करें:"
             self.pass_input.text = ""
 
-    def process_command(self, text):
-        if not self.authenticated:
-            return
+    def update_ui_reply(self, reply):
+        if self.silent_mode:
+            self.chat_display.text = f"[UI-Only Mode]\n{reply}"
+        else:
+            self.chat_display.text = f"Jarvis: {reply}"
 
+    def async_process_command(self, text):
         cmd = text.lower()
         if "म्यूट" in cmd or "silent mode" in cmd:
             self.silent_mode = True
-            self.chat_display.text = "System: साइलेंट न्यूरल मोड एक्टिव।"
-            return
-
-        if "वॉल्यूम" in cmd:
-            self.chat_display.text = f"System: वॉल्यूम कमांड सेट -> {text}"
+            Clock.schedule_once(lambda dt: self.update_ui_reply("न्यूरल वॉयस म्यूट कर दी गई है।"))
             return
 
         reply = self.router.ask(text)
         self.db.add_note(f"User: {text} | AI: {reply}")
-        
-        if not self.silent_mode:
-            self.chat_display.text = f"Jarvis: {reply}"
-        else:
-            self.chat_display.text = f"[Text-Only Response]\n{reply}"
+        Clock.schedule_once(lambda dt: self.update_ui_reply(reply))
+
+    def process_command(self, text):
+        if not self.authenticated:
+            return
+        self.chat_display.text = "प्रोसेसिंग..."
+        threading.Thread(target=self.async_process_command, args=(text,), daemon=True).start()
 
 class JarvisApp(App):
     def build(self):
@@ -180,7 +179,8 @@ class JarvisApp(App):
 
     def trigger_voice_listening(self):
         if self.root_ui.authenticated:
-            self.root_ui.process_command("हेलो जाार्विस, रूटीन अपडेट दो")
+            self.root_ui.process_command("हेलो जार्विस, सिस्टम स्टेटस चेक करो")
 
 if __name__ == "__main__":
     JarvisApp().run()
+
