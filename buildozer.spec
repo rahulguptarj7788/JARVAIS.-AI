@@ -22,7 +22,7 @@ source.include_patterns = assets/*,*.xml
 version = 1.0.0
 
 # (list) Application requirements
-requirements = python3,kivy==2.3.0,requests,urllib3,certifi,pyjnius
+requirements = python3==3.10.12,kivy==2.3.0,requests,urllib3,certifi,pyjnius
 
 # (str) Supported orientation
 orientation = portrait
@@ -31,7 +31,7 @@ orientation = portrait
 fullscreen = 0
 
 # (list) Permissions
-android.permissions = RECORD_AUDIO, FOREGROUND_SERVICE, FOREGROUND_SERVICE_MICROPHONE, SYSTEM_ALERT_WINDOW, POST_NOTIFICATIONS, ACCESS_NOTIFICATION_POLICY, READ_PHONE_STATE, READ_CALL_LOG, ANSWER_PHONE_CALLS, MODIFY_AUDIO_SETTINGS, REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, QUERY_ALL_PACKAGES, INTERNET, ACCESS_NETWORK_STATE
+android.permissions = RECORD_AUDIO, FOREGROUND_SERVICE, FOREGROUND_SERVICE_MICROPHONE, SYSTEM_ALERT_WINDOW, POST_NOTIFICATIONS
 
 # (int) Target Android API level
 android.api = 33
@@ -49,7 +49,7 @@ android.private_storage = True
 android.androidx = True
 
 # (list) Services to declare
-android.services = JarvisWakeWordService:services.py, JarvisWatchdogService:services.py
+android.services = JarvisWakewordService:services.py, JarvisWatchdogService:services.py
 
 [buildozer]
 
@@ -58,4 +58,3 @@ log_level = 2
 
 # (int) Display warning if buildozer is run as root
 warn_on_root = 1
-
