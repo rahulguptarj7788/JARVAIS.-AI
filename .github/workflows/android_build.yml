@@ -16,7 +16,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10.12'
+          python-version: '3.11'
 
       - name: Install System Dependencies
         run: |
@@ -25,7 +25,7 @@ jobs:
 
       - name: Install Buildozer and Dependencies
         run: |
-          pip install --upgrade pip
+          pip install --upgrade pip setuptools wheel
           pip install buildozer "cython<3.0.0"
 
       - name: Build APK with Buildozer
@@ -44,7 +44,7 @@ jobs:
           ONEDRIVE_CLIENT_SECRET: ${{ secrets.ONEDRIVE_CLIENT_SECRET }}
           ONEDRIVE_REFRESH_TOKEN: ${{ secrets.ONEDRIVE_REFRESH_TOKEN }}
         run: |
-          yes | buildozer -s android debug
+          buildozer android debug
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
