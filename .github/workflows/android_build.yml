@@ -28,12 +28,6 @@ jobs:
           pip install --upgrade pip setuptools wheel
           pip install "buildozer>=1.5.0" "cython<3.0.0"
 
-      - name: Accept Android SDK Licenses
-        run: |
-          mkdir -p ~/.android
-          touch ~/.android/repositories.cfg
-          yes | buildozer android debug || true
-
       - name: Build APK with Buildozer
         env:
           GROQ_API_KEY_1: ${{ secrets.GROQ_API_KEY_1 }}
@@ -50,10 +44,11 @@ jobs:
           ONEDRIVE_CLIENT_SECRET: ${{ secrets.ONEDRIVE_CLIENT_SECRET }}
           ONEDRIVE_REFRESH_TOKEN: ${{ secrets.ONEDRIVE_REFRESH_TOKEN }}
         run: |
-          yes | buildozer -s android debug
+          buildozer -s android debug
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: JarvisAI-APK
           path: bin/*.apk
+
