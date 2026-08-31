@@ -31,8 +31,8 @@ jobs:
 
       - name: Install Buildozer
         run: |
-          pip install --upgrade pip setuptools wheel
-          pip install "buildozer>=1.5.0" "cython<3.0.0"
+          pip install --no-cache-dir --upgrade pip setuptools wheel
+          pip install --no-cache-dir "buildozer>=1.5.0" "cython<3.0.0"
 
       - name: Accept licenses and install SDK components
         run: |
@@ -47,8 +47,14 @@ jobs:
           ln -sf $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager $ANDROID_HOME/tools/bin/sdkmanager
           ln -sf $ANDROID_HOME/cmdline-tools/latest/bin/avdmanager $ANDROID_HOME/tools/bin/avdmanager
 
+      - name: Clear pip cache before build
+        run: |
+          rm -rf ~/.cache/pip
+          pip cache purge || true
+
       - name: Build APK with Buildozer
         env:
+          PIP_NO_CACHE_DIR: "1"
           ANDROID_HOME: /usr/local/lib/android/sdk
           ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
           GROQ_API_KEY_1: ${{ secrets.GROQ_API_KEY_1 }}
