@@ -6,7 +6,7 @@ source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,xml,json,java
 source.include_patterns = assets/*,*.xml
 version = 1.0.0
-requirements = python3,kivy,requests,urllib3,certifi,pyjnius
+requirements = python3==3.11.8,kivy,requests,urllib3,certifi,pyjnius
 orientation = portrait
 fullscreen = 0
 android.permissions = RECORD_AUDIO, FOREGROUND_SERVICE, FOREGROUND_SERVICE_MICROPHONE, SYSTEM_ALERT_WINDOW, POST_NOTIFICATIONS, ACCESS_NETWORK_STATE, ACCESS_WIFI_STATE
