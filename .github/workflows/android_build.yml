@@ -55,6 +55,8 @@ jobs:
       - name: Build APK with Buildozer
         env:
           PIP_NO_CACHE_DIR: "1"
+          PIP_PROGRESS_BAR: "off"
+          PIP_NO_INPUT: "1"
           ANDROID_HOME: /usr/local/lib/android/sdk
           ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
           GROQ_API_KEY_1: ${{ secrets.GROQ_API_KEY_1 }}
