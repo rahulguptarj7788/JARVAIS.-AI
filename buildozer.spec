@@ -1,67 +1,25 @@
-name: Build Jarvis AI Android APK
+[app]
+title = Jarvis AI
+package.name = jarvisai
+package.domain = com.jarvis.assistant
+source.dir = .
+source.include_exts = py,png,jpg,kv,atlas,xml,json,java
+source.include_patterns = assets/*,*.xml
+version = 1.0.0
+requirements = python3,kivy,requests,urllib3,certifi,pyjnius
+orientation = portrait
+fullscreen = 0
+android.permissions = RECORD_AUDIO, FOREGROUND_SERVICE, FOREGROUND_SERVICE_MICROPHONE, SYSTEM_ALERT_WINDOW, POST_NOTIFICATIONS, ACCESS_NETWORK_STATE, ACCESS_WIFI_STATE
+android.api = 33
+android.build_tools = 33.0.2
+android.minapi = 24
+android.ndk = 25b
+android.sdk_path = /usr/local/lib/android/sdk
+android.ndk_path = /usr/local/lib/android/sdk/ndk/25.2.9519653
+android.private_storage = True
+android.androidx = True
 
-on:
-  push:
-    branches: [ main, master ]
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - name: Install System Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ccache git python3-pip build-essential libltdl-dev libffi-dev libssl-dev ffmpeg autoconf automake libtool unzip zip zlib1g-dev
-
-      - name: Install Buildozer
-        run: |
-          pip install --upgrade pip setuptools wheel
-          pip install "buildozer>=1.5.0" "cython<3.0.0"
-
-      - name: Accept licenses and install SDK components
-        run: |
-          export ANDROID_HOME=/usr/local/lib/android/sdk
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
-          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2" "ndk;25.2.9519653"
-
-      - name: Build APK with Buildozer
-        env:
-          ANDROID_HOME: /usr/local/lib/android/sdk
-          ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-          GROQ_API_KEY_1: ${{ secrets.GROQ_API_KEY_1 }}
-          GROQ_API_KEY_2: ${{ secrets.GROQ_API_KEY_2 }}
-          GEMINI_API_KEY_1: ${{ secrets.GEMINI_API_KEY_1 }}
-          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
-          OPENROUTER_API_KEY_1: ${{ secrets.OPENROUTER_API_KEY_1 }}
-          OPENROUTER_API_KEY_2: ${{ secrets.OPENROUTER_API_KEY_2 }}
-          CEREBRAS_API_KEY_1: ${{ secrets.CEREBRAS_API_KEY_1 }}
-          CEREBRAS_API_KEY_2: ${{ secrets.CEREBRAS_API_KEY_2 }}
-          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
-          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
-          ONEDRIVE_CLIENT_ID: ${{ secrets.ONEDRIVE_CLIENT_ID }}
-          ONEDRIVE_CLIENT_SECRET: ${{ secrets.ONEDRIVE_CLIENT_SECRET }}
-          ONEDRIVE_REFRESH_TOKEN: ${{ secrets.ONEDRIVE_REFRESH_TOKEN }}
-        run: |
-          buildozer -v android debug
-
-      - name: Upload APK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: JarvisAI-APK
-          path: bin/*.apk
+[buildozer]
+log_level = 2
+warn_on_root = 1
+android.accept_sdk_licenses = True
