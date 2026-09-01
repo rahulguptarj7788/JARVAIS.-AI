@@ -55,12 +55,17 @@ jobs:
           pip cache purge || true
           find / -name "__pycache__" -path "*pip*" -exec rm -rf {} + 2>/dev/null || true
 
+      - name: Create pip constraint file
+        run: |
+          echo "pip==24.0" > /home/runner/pip-constraints.txt
+
       - name: Build APK with Buildozer
         env:
           PIP_NO_CACHE_DIR: "1"
           PIP_PROGRESS_BAR: "off"
           PIP_NO_INPUT: "1"
           PIP_DISABLE_PIP_VERSION_CHECK: "1"
+          PIP_CONSTRAINT: /home/runner/pip-constraints.txt
           PYTHONNOUSERSITE: "1"
           PYTHONPATH: ""
           ANDROID_HOME: /usr/local/lib/android/sdk
