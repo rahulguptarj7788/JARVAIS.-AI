@@ -31,7 +31,8 @@ jobs:
 
       - name: Install Buildozer
         run: |
-          pip install --no-cache-dir --upgrade pip setuptools wheel
+          python3 -m pip install --no-cache-dir "pip==24.0"
+          pip install --no-cache-dir setuptools wheel
           pip install --no-cache-dir "buildozer>=1.5.0" "cython<3.0.0"
 
       - name: Accept licenses and install SDK components
@@ -47,16 +48,20 @@ jobs:
           ln -sf $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager $ANDROID_HOME/tools/bin/sdkmanager
           ln -sf $ANDROID_HOME/cmdline-tools/latest/bin/avdmanager $ANDROID_HOME/tools/bin/avdmanager
 
-      - name: Clear pip cache before build
+      - name: Clear pip and python caches before build
         run: |
           rm -rf ~/.cache/pip
           pip cache purge || true
+          find / -name "__pycache__" -path "*pip*" -exec rm -rf {} + 2>/dev/null || true
 
       - name: Build APK with Buildozer
         env:
           PIP_NO_CACHE_DIR: "1"
           PIP_PROGRESS_BAR: "off"
           PIP_NO_INPUT: "1"
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
+          PYTHONNOUSERSITE: "1"
+          PYTHONPATH: ""
           ANDROID_HOME: /usr/local/lib/android/sdk
           ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
           GROQ_API_KEY_1: ${{ secrets.GROQ_API_KEY_1 }}
@@ -73,6 +78,7 @@ jobs:
           ONEDRIVE_CLIENT_SECRET: ${{ secrets.ONEDRIVE_CLIENT_SECRET }}
           ONEDRIVE_REFRESH_TOKEN: ${{ secrets.ONEDRIVE_REFRESH_TOKEN }}
         run: |
+          unset PYTHONPATH
           buildozer -v android debug
 
       - name: Upload APK Artifact
