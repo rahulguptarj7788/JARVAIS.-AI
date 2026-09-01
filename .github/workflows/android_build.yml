@@ -33,7 +33,8 @@ jobs:
         run: |
           python3 -m pip install --no-cache-dir "pip==24.0"
           pip install --no-cache-dir setuptools wheel
-          pip install --no-cache-dir "buildozer>=1.5.0" "cython<3.0.0"
+          pip install --no-cache-dir "buildozer==1.5.0" "cython<3.0.0"
+          pip install --no-cache-dir "https://github.com/kivy/python-for-android/archive/master.zip"
 
       - name: Accept licenses and install SDK components
         run: |
