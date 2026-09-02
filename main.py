@@ -15,11 +15,6 @@ from kivy.core.text import LabelBase
 APP_PASS = "01062013"
 SETTINGS_PASS = "18112023"
 
-# ---------- Devanagari font support ----------
-# Kivy's default font has no Hindi glyphs. Many Android devices ship a
-# Devanagari-capable system font. Try common paths and register the first
-# one that exists. If none exist, fall back silently to the default font
-# (Hindi text will still show boxes on that device, but the app won't crash).
 DEVANAGARI_FONT_NAME = "DevanagariFont"
 _CANDIDATE_FONT_PATHS = [
     "/system/fonts/NotoSansDevanagari-Regular.ttf",
@@ -39,9 +34,6 @@ for _path in _CANDIDATE_FONT_PATHS:
             pass
 
 def app_font():
-    # Kivy's built-in default font is registered internally as 'Roboto'.
-    # Never return None here -- passing font_name=None into a Label/Button
-    # crashes on app start, since Kivy expects a string it can resolve.
     return DEVANAGARI_FONT_NAME if _font_registered else "Roboto"
 
 
@@ -106,7 +98,6 @@ class SmartAIRouter:
         return "ऑफ़लाइन मोड: लोकल मैक्रो एवं कैलकुलेशन इंजन एक्टिव है।"
 
 
-# ---------- Login Screen (PIN keypad UI) ----------
 class LoginScreen(Screen):
     def __init__(self, expected_pass, on_success, **kwargs):
         super().__init__(**kwargs)
@@ -116,12 +107,11 @@ class LoginScreen(Screen):
 
         root = BoxLayout(orientation='vertical')
 
-        # Top white card area
         top_card = BoxLayout(orientation='vertical', size_hint=(1, 0.42),
                               padding=[20, 40, 20, 20], spacing=20)
         with top_card.canvas.before:
             Color(1, 1, 1, 1)
-            self._top_bg = Ellipse  # placeholder, real rect drawn below
+            self._top_bg = Ellipse
         from kivy.graphics import Rectangle
         with top_card.canvas.before:
             Color(1, 1, 1, 1)
@@ -158,7 +148,6 @@ class LoginScreen(Screen):
 
         root.add_widget(top_card)
 
-        # Bottom purple keypad area
         keypad_wrap = BoxLayout(orientation='vertical', size_hint=(1, 0.58))
         with keypad_wrap.canvas.before:
             Color(0.55, 0.15, 0.9, 1)
@@ -213,7 +202,6 @@ from kivy.uix.scrollview import ScrollView
 from kivy.graphics import RoundedRectangle, Rectangle
 
 
-# ---------- Glowing purple orb card (tap to talk) ----------
 class GlowOrbCard(ButtonBehavior, FloatLayout):
     def __init__(self, on_tap, **kwargs):
         super().__init__(**kwargs)
@@ -250,7 +238,6 @@ class GlowOrbCard(ButtonBehavior, FloatLayout):
             self._on_tap()
 
 
-# ---------- Quick command icon button (purple theme) ----------
 class QuickIconButton(ButtonBehavior, BoxLayout):
     def __init__(self, label_text, on_tap, **kwargs):
         super().__init__(orientation='vertical', **kwargs)
@@ -280,7 +267,6 @@ class QuickIconButton(ButtonBehavior, BoxLayout):
             self._on_tap()
 
 
-# ---------- Main Jarvis Screen ----------
 class MainScreen(Screen):
     def __init__(self, on_settings, **kwargs):
         super().__init__(**kwargs)
@@ -302,7 +288,7 @@ class MainScreen(Screen):
                            color=(1, 1, 1, 1))
         header.add_widget(menu_btn)
 
-        title = Label(text="[b]JARVIS[/b] [color=b06bffff]AI[/color]", markup=True,
+        title = Label(text="[b]JARVIS[/b] [color=#b06bffff]AI[/color]", markup=True,
                       font_size='24sp', color=(1, 1, 1, 1))
         header.add_widget(title)
 
@@ -383,7 +369,7 @@ class MainScreen(Screen):
 
     def process_command(self, text):
         self.chat_display.markup = True
-        self.chat_display.text += f"\n[color=b06bffff]You:[/color] {text}\nप्रोसेसिंग..."
+        self.chat_display.text += f"\n[color=#b06bffff]You:[/color] {text}\nप्रोसेसिंग..."
         threading.Thread(target=self._async_process, args=(text,), daemon=True).start()
 
     def _async_process(self, text):
@@ -403,7 +389,6 @@ class MainScreen(Screen):
         self.chat_display.text += f"\n{prefix} {reply}\n"
 
 
-# ---------- Minimal settings placeholder screen ----------
 class SettingsScreen(Screen):
     def __init__(self, on_back, **kwargs):
         super().__init__(**kwargs)
@@ -463,4 +448,3 @@ class JarvisApp(App):
 
 if __name__ == "__main__":
     JarvisApp().run()
-
