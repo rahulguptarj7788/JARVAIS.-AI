@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import threading
+import traceback
 from kivy.app import App
 from kivy.uix.screenmanager import ScreenManager, Screen
 from kivy.uix.boxlayout import BoxLayout
@@ -8,8 +9,10 @@ from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.gridlayout import GridLayout
 from kivy.uix.label import Label
 from kivy.uix.button import Button
+from kivy.uix.scrollview import ScrollView
+from kivy.uix.behaviors import ButtonBehavior
 from kivy.clock import Clock
-from kivy.graphics import Color, Ellipse
+from kivy.graphics import Color, Ellipse, Rectangle, RoundedRectangle
 from kivy.core.text import LabelBase
 
 APP_PASS = "01062013"
@@ -32,6 +35,7 @@ for _path in _CANDIDATE_FONT_PATHS:
             break
         except Exception:
             pass
+
 
 def app_font():
     return DEVANAGARI_FONT_NAME if _font_registered else "Roboto"
@@ -109,10 +113,6 @@ class LoginScreen(Screen):
 
         top_card = BoxLayout(orientation='vertical', size_hint=(1, 0.42),
                               padding=[20, 40, 20, 20], spacing=20)
-        with top_card.canvas.before:
-            Color(1, 1, 1, 1)
-            self._top_bg = Ellipse
-        from kivy.graphics import Rectangle
         with top_card.canvas.before:
             Color(1, 1, 1, 1)
             self._top_rect = Rectangle(pos=top_card.pos, size=top_card.size)
@@ -195,11 +195,6 @@ class LoginScreen(Screen):
             self.pin_display.text = "गलत पासवर्ड"
             self.entered = ""
             Clock.schedule_once(lambda dt: setattr(self.pin_display, 'text', ''), 1.2)
-
-
-from kivy.uix.behaviors import ButtonBehavior
-from kivy.uix.scrollview import ScrollView
-from kivy.graphics import RoundedRectangle, Rectangle
 
 
 class GlowOrbCard(ButtonBehavior, FloatLayout):
@@ -420,19 +415,60 @@ class SettingsScreen(Screen):
         self._bg.size = instance.size
 
 
+class ErrorScreen(Screen):
+    def __init__(self, error_text, **kwargs):
+        super().__init__(**kwargs)
+        root = BoxLayout(orientation='vertical', padding=15)
+        with root.canvas.before:
+            Color(0.1, 0, 0, 1)
+            self._bg = Rectangle(pos=root.pos, size=root.size)
+        root.bind(pos=self._sync_bg, size=self._sync_bg)
+
+        scroll = ScrollView(size_hint=(1, 1))
+        lbl = Label(
+            text="STARTUP ERROR:\n\n" + error_text,
+            color=(1, 0.7, 0.7, 1),
+            font_size='13sp',
+            size_hint=(1, None),
+            halign='left',
+            valign='top'
+        )
+        lbl.bind(
+            width=lambda inst, val: setattr(inst, 'text_size', (val, None)),
+            texture_size=lambda inst, val: setattr(inst, 'height', val[1])
+        )
+        scroll.add_widget(lbl)
+        root.add_widget(scroll)
+        self.add_widget(root)
+
+    def _sync_bg(self, instance, value):
+        self._bg.pos = instance.pos
+        self._bg.size = instance.size
+
+
 class JarvisApp(App):
     def build(self):
         sm = ScreenManager()
+        try:
+            login = LoginScreen(APP_PASS, on_success=self.go_main, name='login')
+            self.main_screen = MainScreen(on_settings=self.go_settings_lock, name='main')
+            settings_lock = LoginScreen(SETTINGS_PASS, on_success=self.go_settings, name='settings_lock')
+            settings_screen = SettingsScreen(on_back=self.go_main, name='settings')
 
-        login = LoginScreen(APP_PASS, on_success=self.go_main, name='login')
-        self.main_screen = MainScreen(on_settings=self.go_settings_lock, name='main')
-        settings_lock = LoginScreen(SETTINGS_PASS, on_success=self.go_settings, name='settings_lock')
-        settings_screen = SettingsScreen(on_back=self.go_main, name='settings')
+            sm.add_widget(login)
+            sm.add_widget(self.main_screen)
+            sm.add_widget(settings_lock)
+            sm.add_widget(settings_screen)
+        except Exception:
+            err_text = traceback.format_exc()
+            try:
+                with open("jarvis_crash_log.txt", "w") as f:
+                    f.write(err_text)
+            except Exception:
+                pass
+            sm.clear_widgets()
+            sm.add_widget(ErrorScreen(err_text, name='error'))
 
-        sm.add_widget(login)
-        sm.add_widget(self.main_screen)
-        sm.add_widget(settings_lock)
-        sm.add_widget(settings_screen)
         self.sm = sm
         return sm
 
