@@ -222,7 +222,7 @@ class GlowOrbCard(ButtonBehavior, FloatLayout):
     def _sync_orb(self, instance, value):
         cx = self.center_x
         cy = self.center_y
-        base = min(self.width, self.height) * 0.45
+        base = min(self.width, self.height) * 0.4
         for shape, scale in ((self._glow_outer, 1.0), (self._glow_mid, 0.75), (self._orb, 0.5)):
             r = base * scale
             shape.pos = (cx - r, cy - r)
@@ -303,8 +303,10 @@ class MainScreen(Screen):
         )
         root.add_widget(subtitle)
 
+        # NOTE: FloatLayout has no 'padding' property, so it must NOT be
+        # passed here. The card draws with a fixed inset instead.
         orb_card = GlowOrbCard(on_tap=self.trigger_voice_listening,
-                                size_hint=(1, 0.32), padding=20)
+                                size_hint=(1, 0.32))
         root.add_widget(orb_card)
 
         icons_grid = GridLayout(cols=3, rows=2, size_hint=(1, 0.22),
