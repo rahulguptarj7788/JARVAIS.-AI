@@ -9,6 +9,8 @@ version = 1.0.0
 requirements = hostpython3==3.11.6,python3==3.11.6,kivy,requests,urllib3,certifi,pyjnius
 orientation = portrait
 fullscreen = 0
+icon.filename = %(source.dir)s/assets/icon.png
+presplash.filename = %(source.dir)s/assets/presplash.png
 android.permissions = RECORD_AUDIO, FOREGROUND_SERVICE, FOREGROUND_SERVICE_MICROPHONE, SYSTEM_ALERT_WINDOW, POST_NOTIFICATIONS, ACCESS_NETWORK_STATE, ACCESS_WIFI_STATE
 android.api = 33
 android.build_tools = 33.0.2
