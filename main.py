@@ -39,7 +39,10 @@ for _path in _CANDIDATE_FONT_PATHS:
             pass
 
 def app_font():
-    return DEVANAGARI_FONT_NAME if _font_registered else None
+    # Kivy's built-in default font is registered internally as 'Roboto'.
+    # Never return None here -- passing font_name=None into a Label/Button
+    # crashes on app start, since Kivy expects a string it can resolve.
+    return DEVANAGARI_FONT_NAME if _font_registered else "Roboto"
 
 
 class DatabaseManager:
@@ -325,3 +328,4 @@ class JarvisApp(App):
 
 if __name__ == "__main__":
     JarvisApp().run()
+
