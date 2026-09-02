@@ -208,82 +208,170 @@ class LoginScreen(Screen):
             Clock.schedule_once(lambda dt: setattr(self.pin_display, 'text', ''), 1.2)
 
 
-# ---------- Floating purple bubble (fixed touch layout) ----------
-class PurpleBubble(FloatLayout):
+from kivy.uix.behaviors import ButtonBehavior
+from kivy.uix.scrollview import ScrollView
+from kivy.graphics import RoundedRectangle, Rectangle
+
+
+# ---------- Glowing purple orb card (tap to talk) ----------
+class GlowOrbCard(ButtonBehavior, FloatLayout):
     def __init__(self, on_tap, **kwargs):
         super().__init__(**kwargs)
-        self.size_hint = (None, None)
-        self.size = (80, 80)
-        self.pos_hint = {'right': 0.95, 'y': 0.05}
+        self._on_tap = on_tap
+        with self.canvas.before:
+            Color(0.09, 0.05, 0.14, 1)
+            self._card_bg = RoundedRectangle(pos=self.pos, size=self.size, radius=[24])
+        self.bind(pos=self._sync, size=self._sync)
 
         with self.canvas:
-            Color(0.5, 0.0, 0.9, 0.85)
-            self.orb = Ellipse(pos=self.pos, size=self.size)
-        self.bind(pos=self._update_orb, size=self._update_orb)
+            Color(0.55, 0.2, 0.95, 0.25)
+            self._glow_outer = Ellipse(pos=self.pos, size=self.size)
+            Color(0.55, 0.15, 0.95, 0.55)
+            self._glow_mid = Ellipse(pos=self.pos, size=self.size)
+            Color(0.72, 0.45, 1, 0.95)
+            self._orb = Ellipse(pos=self.pos, size=self.size)
+        self.bind(pos=self._sync_orb, size=self._sync_orb)
 
-        self.btn = Button(
-            text="JARVIS",
-            font_size='10sp',
-            background_color=(0, 0, 0, 0),
-            background_normal='',
-            size_hint=(1, 1),
-            pos=self.pos
+    def _sync(self, instance, value):
+        self._card_bg.pos = instance.pos
+        self._card_bg.size = instance.size
+
+    def _sync_orb(self, instance, value):
+        cx = self.center_x
+        cy = self.center_y
+        base = min(self.width, self.height) * 0.45
+        for shape, scale in ((self._glow_outer, 1.0), (self._glow_mid, 0.75), (self._orb, 0.5)):
+            r = base * scale
+            shape.pos = (cx - r, cy - r)
+            shape.size = (r * 2, r * 2)
+
+    def on_press(self):
+        if self._on_tap:
+            self._on_tap()
+
+
+# ---------- Quick command icon button (purple theme) ----------
+class QuickIconButton(ButtonBehavior, BoxLayout):
+    def __init__(self, label_text, on_tap, **kwargs):
+        super().__init__(orientation='vertical', **kwargs)
+        self._on_tap = on_tap
+        with self.canvas.before:
+            Color(0.22, 0.1, 0.35, 1)
+            self._bg = RoundedRectangle(pos=self.pos, size=self.size, radius=[14])
+        self.bind(pos=self._sync, size=self._sync)
+
+        lbl = Label(
+            text=label_text,
+            font_name=app_font(),
+            color=(0.85, 0.75, 1, 1),
+            font_size='13sp',
+            halign='center',
+            valign='middle'
         )
-        self.btn.bind(on_release=lambda inst: on_tap())
-        self.add_widget(self.btn)
-        self.bind(pos=self._update_btn, size=self._update_btn)
+        lbl.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
+        self.add_widget(lbl)
 
-    def _update_orb(self, instance, value):
-        self.orb.pos = self.pos
-        self.orb.size = self.size
+    def _sync(self, instance, value):
+        self._bg.pos = instance.pos
+        self._bg.size = instance.size
 
-    def _update_btn(self, instance, value):
-        self.btn.pos = self.pos
-        self.btn.size = self.size
+    def on_press(self):
+        if self._on_tap:
+            self._on_tap()
 
 
 # ---------- Main Jarvis Screen ----------
 class MainScreen(Screen):
-    def __init__(self, **kwargs):
+    def __init__(self, on_settings, **kwargs):
         super().__init__(**kwargs)
         self.db = DatabaseManager()
         self.router = SmartAIRouter()
         self.silent_mode = False
+        self.on_settings = on_settings
 
-        root = FloatLayout()
+        root = BoxLayout(orientation='vertical')
         with root.canvas.before:
-            Color(0.05, 0.02, 0.1, 1)
-            from kivy.graphics import Rectangle
+            Color(0.04, 0.02, 0.08, 1)
             self._bg = Rectangle(pos=root.pos, size=root.size)
         root.bind(pos=self._sync_bg, size=self._sync_bg)
+
+        header = BoxLayout(orientation='horizontal', size_hint=(1, None), height=60,
+                            padding=[15, 5, 15, 5])
+        menu_btn = Button(text="=", font_size='22sp', size_hint=(None, 1), width=50,
+                           background_color=(0, 0, 0, 0), background_normal='',
+                           color=(1, 1, 1, 1))
+        header.add_widget(menu_btn)
+
+        title = Label(text="[b]JARVIS[/b] [color=b06bffff]AI[/color]", markup=True,
+                      font_size='24sp', color=(1, 1, 1, 1))
+        header.add_widget(title)
+
+        settings_btn = Button(text="*", font_size='20sp', size_hint=(None, 1), width=50,
+                               background_color=(0, 0, 0, 0), background_normal='',
+                               color=(1, 1, 1, 1))
+        settings_btn.bind(on_release=lambda inst: self.on_settings())
+        header.add_widget(settings_btn)
+        root.add_widget(header)
+
+        subtitle = Label(
+            text="YOUR INTELLIGENT VOICE ASSISTANT",
+            font_size='12sp',
+            color=(0.6, 0.5, 0.75, 1),
+            size_hint=(1, None),
+            height=30
+        )
+        root.add_widget(subtitle)
+
+        orb_card = GlowOrbCard(on_tap=self.trigger_voice_listening,
+                                size_hint=(1, 0.32), padding=20)
+        root.add_widget(orb_card)
+
+        icons_grid = GridLayout(cols=3, rows=2, size_hint=(1, 0.22),
+                                 spacing=10, padding=[15, 10, 15, 10])
+        quick_actions = [
+            ("नोट्स", "नोट लो"),
+            ("अलार्म", "अलार्म सेट करो"),
+            ("म्यूजिक", "गाना बजाओ"),
+            ("टॉर्च", "टॉर्च ऑन करो"),
+            ("वाई-फाई", "वाई-फाई टॉगल करो"),
+            ("सेटिंग्स", "सेटिंग्स खोलो"),
+        ]
+        for label_text, command_text in quick_actions:
+            btn = QuickIconButton(
+                label_text=label_text,
+                on_tap=lambda ct=command_text: self.process_command(ct)
+            )
+            icons_grid.add_widget(btn)
+        root.add_widget(icons_grid)
 
         self.status_label = Label(
             text="Jarvis AI Ready | Multi-Routing & Accessibility Active",
             font_name=app_font(),
             color=(0.7, 0.3, 1, 1),
-            font_size='16sp',
-            size_hint=(1, 0.1),
-            pos_hint={'x': 0, 'top': 1}
+            font_size='13sp',
+            size_hint=(1, None),
+            height=30
         )
         root.add_widget(self.status_label)
 
+        scroll = ScrollView(size_hint=(1, 1))
         self.chat_display = Label(
             text="",
             font_name=app_font(),
             color=(1, 1, 1, 1),
-            font_size='15sp',
-            size_hint=(0.9, 0.5),
-            pos_hint={'x': 0.05, 'y': 0.3},
+            font_size='14sp',
+            size_hint=(1, None),
             halign='left',
-            valign='top'
+            valign='top',
+            padding=[15, 10]
         )
-        self.chat_display.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
-        root.add_widget(self.chat_display)
+        self.chat_display.bind(
+            width=lambda inst, val: setattr(inst, 'text_size', (val, None)),
+            texture_size=lambda inst, val: setattr(inst, 'height', val[1])
+        )
+        scroll.add_widget(self.chat_display)
+        root.add_widget(scroll)
 
-        bubble = PurpleBubble(on_tap=self.trigger_voice_listening)
-        root.add_widget(bubble)
-
-        self._root_ref = root
         self.add_widget(root)
 
     def _sync_bg(self, instance, value):
@@ -294,7 +382,8 @@ class MainScreen(Screen):
         self.process_command("हेलो जार्विस, सिस्टम स्टेटस चेक करो")
 
     def process_command(self, text):
-        self.chat_display.text = "प्रोसेसिंग..."
+        self.chat_display.markup = True
+        self.chat_display.text += f"\n[color=b06bffff]You:[/color] {text}\nप्रोसेसिंग..."
         threading.Thread(target=self._async_process, args=(text,), daemon=True).start()
 
     def _async_process(self, text):
@@ -308,22 +397,68 @@ class MainScreen(Screen):
         Clock.schedule_once(lambda dt: self._update_reply(reply))
 
     def _update_reply(self, reply):
-        prefix = "[UI-Only Mode]\n" if self.silent_mode else "Jarvis: "
-        self.chat_display.text = f"{prefix}{reply}"
+        prefix = "[UI-Only Mode]" if self.silent_mode else "Jarvis:"
+        if self.chat_display.text.endswith("प्रोसेसिंग..."):
+            self.chat_display.text = self.chat_display.text[:-len("प्रोसेसिंग...")]
+        self.chat_display.text += f"\n{prefix} {reply}\n"
+
+
+# ---------- Minimal settings placeholder screen ----------
+class SettingsScreen(Screen):
+    def __init__(self, on_back, **kwargs):
+        super().__init__(**kwargs)
+        root = BoxLayout(orientation='vertical', padding=20, spacing=20)
+        with root.canvas.before:
+            Color(0.04, 0.02, 0.08, 1)
+            self._bg = Rectangle(pos=root.pos, size=root.size)
+        root.bind(pos=self._sync_bg, size=self._sync_bg)
+
+        lbl = Label(
+            text="Settings\n(coming in a later phase: API keys, voice, macros)",
+            font_name=app_font(),
+            color=(0.8, 0.7, 1, 1),
+            font_size='16sp',
+            halign='center'
+        )
+        lbl.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
+        root.add_widget(lbl)
+
+        back_btn = Button(text="Back", size_hint=(1, None), height=50,
+                           background_color=(0.55, 0.15, 0.9, 1))
+        back_btn.bind(on_release=lambda inst: on_back())
+        root.add_widget(back_btn)
+
+        self.add_widget(root)
+
+    def _sync_bg(self, instance, value):
+        self._bg.pos = instance.pos
+        self._bg.size = instance.size
 
 
 class JarvisApp(App):
     def build(self):
         sm = ScreenManager()
+
         login = LoginScreen(APP_PASS, on_success=self.go_main, name='login')
-        self.main_screen = MainScreen(name='main')
+        self.main_screen = MainScreen(on_settings=self.go_settings_lock, name='main')
+        settings_lock = LoginScreen(SETTINGS_PASS, on_success=self.go_settings, name='settings_lock')
+        settings_screen = SettingsScreen(on_back=self.go_main, name='settings')
+
         sm.add_widget(login)
         sm.add_widget(self.main_screen)
+        sm.add_widget(settings_lock)
+        sm.add_widget(settings_screen)
         self.sm = sm
         return sm
 
     def go_main(self):
         self.sm.current = 'main'
+
+    def go_settings_lock(self):
+        self.sm.current = 'settings_lock'
+
+    def go_settings(self):
+        self.sm.current = 'settings'
 
 
 if __name__ == "__main__":
