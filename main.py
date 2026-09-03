@@ -2,6 +2,7 @@ import os
 import sqlite3
 import threading
 import traceback
+from kivy import platform
 from kivy.app import App
 from kivy.uix.screenmanager import ScreenManager, Screen
 from kivy.uix.boxlayout import BoxLayout
@@ -18,13 +19,13 @@ from kivy.core.text import LabelBase
 APP_PASS = "01062013"
 SETTINGS_PASS = "18112023"
 
+# ---------------- Devanagari font ----------------
 DEVANAGARI_FONT_NAME = "DevanagariFont"
 _CANDIDATE_FONT_PATHS = [
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "NotoSansDevanagari-Regular.ttf"),
+    "assets/NotoSansDevanagari-Regular.ttf",
     "/system/fonts/NotoSansDevanagari-Regular.ttf",
     "/system/fonts/NotoSansDevanagariUI-Regular.ttf",
-    "/system/fonts/NotoSansDevanagari.ttf",
-    "/system/fonts/MiSansDevanagari-Regular.ttf",
-    "/system/fonts/Hind-Regular.ttf",
 ]
 _font_registered = False
 for _path in _CANDIDATE_FONT_PATHS:
@@ -41,6 +42,7 @@ def app_font():
     return DEVANAGARI_FONT_NAME if _font_registered else "Roboto"
 
 
+# ---------------- Database ----------------
 class DatabaseManager:
     def __init__(self):
         self.conn = sqlite3.connect("jarvis_local.db", check_same_thread=False)
@@ -70,38 +72,218 @@ class DatabaseManager:
         self.conn.commit()
 
 
+# ---------------- Smart AI Router (4 providers, 2 keys each, failover) ----------------
 class SmartAIRouter:
     def __init__(self):
-        self.groq_keys = [os.environ.get("GROQ_API_KEY_1"), os.environ.get("GROQ_API_KEY_2")]
-        self.active_index = 0
+        self.providers = [
+            {
+                "name": "groq",
+                "keys": [os.environ.get("GROQ_API_KEY_1"), os.environ.get("GROQ_API_KEY_2")],
+                "call": self._call_groq,
+            },
+            {
+                "name": "gemini",
+                "keys": [os.environ.get("GEMINI_API_KEY_1"), os.environ.get("GEMINI_API_KEY_2")],
+                "call": self._call_gemini,
+            },
+            {
+                "name": "openrouter",
+                "keys": [os.environ.get("OPENROUTER_API_KEY_1"), os.environ.get("OPENROUTER_API_KEY_2")],
+                "call": self._call_openrouter,
+            },
+            {
+                "name": "cerebras",
+                "keys": [os.environ.get("CEREBRAS_API_KEY_1"), os.environ.get("CEREBRAS_API_KEY_2")],
+                "call": self._call_cerebras,
+            },
+        ]
+        self.key_index = {p["name"]: 0 for p in self.providers}
 
-    def query_groq(self, prompt):
-        import requests
-        keys = [k for k in self.groq_keys if k]
+    def _next_key(self, provider):
+        keys = [k for k in provider["keys"] if k]
         if not keys:
             return None
-        key = keys[self.active_index % len(keys)]
+        idx = self.key_index[provider["name"]] % len(keys)
+        self.key_index[provider["name"]] += 1
+        return keys[idx]
+
+    def _call_groq(self, key, prompt):
+        import requests
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-        payload = {
-            "model": "llama-3.3-70b-versatile",
-            "messages": [{"role": "user", "content": prompt}]
-        }
-        try:
-            res = requests.post(url, json=payload, timeout=8)
-            if res.status_code == 200:
-                return res.json()["choices"][0]["message"]["content"]
-        except Exception:
-            self.active_index += 1
-        return None
+        payload = {"model": "llama-3.3-70b-versatile",
+                   "messages": [{"role": "user", "content": prompt}]}
+        res = requests.post(url, json=payload, headers=headers, timeout=8)
+        res.raise_for_status()
+        return res.json()["choices"][0]["message"]["content"]
+
+    def _call_gemini(self, key, prompt):
+        import requests
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
+        payload = {"contents": [{"parts": [{"text": prompt}]}]}
+        res = requests.post(url, json=payload, timeout=8)
+        res.raise_for_status()
+        return res.json()["candidates"][0]["content"]["parts"][0]["text"]
+
+    def _call_openrouter(self, key, prompt):
+        import requests
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        payload = {"model": "deepseek/deepseek-r1",
+                   "messages": [{"role": "user", "content": prompt}]}
+        res = requests.post(url, json=payload, headers=headers, timeout=8)
+        res.raise_for_status()
+        return res.json()["choices"][0]["message"]["content"]
+
+    def _call_cerebras(self, key, prompt):
+        import requests
+        url = "https://api.cerebras.ai/v1/chat/completions"
+        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        payload = {"model": "llama-3.3-70b",
+                   "messages": [{"role": "user", "content": prompt}]}
+        res = requests.post(url, json=payload, headers=headers, timeout=8)
+        res.raise_for_status()
+        return res.json()["choices"][0]["message"]["content"]
 
     def ask(self, prompt):
-        res = self.query_groq(prompt)
-        if res:
-            return res
-        return "ऑफ़लाइन मोड: लोकल मैक्रो एवं कैलकुलेशन इंजन एक्टिव है।"
+        for provider in self.providers:
+            key = self._next_key(provider)
+            if not key:
+                continue
+            try:
+                return provider["call"](key, prompt)
+            except Exception:
+                continue
+        return "ऑफ़लाइन मोड: सभी API राउट विफल रहे, लोकल इंजन एक्टिव है।"
 
 
+# ---------------- OneDrive integration ----------------
+class OneDriveClient:
+    def __init__(self):
+        self.client_id = os.environ.get("ONEDRIVE_CLIENT_ID")
+        self.client_secret = os.environ.get("ONEDRIVE_CLIENT_SECRET")
+        self.refresh_token = os.environ.get("ONEDRIVE_REFRESH_TOKEN")
+        self.access_token = None
+
+    def get_access_token(self):
+        import requests
+        if not (self.client_id and self.client_secret and self.refresh_token):
+            return None
+        url = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+        data = {
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "refresh_token": self.refresh_token,
+            "grant_type": "refresh_token",
+            "scope": "Files.ReadWrite offline_access",
+        }
+        try:
+            res = requests.post(url, data=data, timeout=10)
+            res.raise_for_status()
+            self.access_token = res.json().get("access_token")
+            return self.access_token
+        except Exception:
+            return None
+
+    def upload_file(self, local_path, remote_name):
+        import requests
+        token = self.access_token or self.get_access_token()
+        if not token:
+            return False
+        url = f"https://graph.microsoft.com/v1.0/me/drive/root:/{remote_name}:/content"
+        headers = {"Authorization": f"Bearer {token}"}
+        try:
+            with open(local_path, "rb") as f:
+                res = requests.put(url, headers=headers, data=f, timeout=20)
+            return res.status_code in (200, 201)
+        except Exception:
+            return False
+
+
+# ---------------- Media search (Pexels / Pixabay) ----------------
+class MediaSearch:
+    def __init__(self):
+        self.pexels_key = os.environ.get("PEXELS_API_KEY")
+        self.pixabay_key = os.environ.get("PIXABAY_API_KEY")
+
+    def search_pexels(self, query):
+        import requests
+        if not self.pexels_key:
+            return []
+        headers = {"Authorization": self.pexels_key}
+        try:
+            res = requests.get(f"https://api.pexels.com/v1/search?query={query}&per_page=5",
+                                headers=headers, timeout=8)
+            res.raise_for_status()
+            return [p["src"]["medium"] for p in res.json().get("photos", [])]
+        except Exception:
+            return []
+
+    def search_pixabay(self, query):
+        import requests
+        if not self.pixabay_key:
+            return []
+        try:
+            res = requests.get(
+                f"https://pixabay.com/api/?key={self.pixabay_key}&q={query}&per_page=5",
+                timeout=8)
+            res.raise_for_status()
+            return [h["webformatURL"] for h in res.json().get("hits", [])]
+        except Exception:
+            return []
+
+
+# ---------------- Android native TTS (no edge-tts, no pyttsx3) ----------------
+class AndroidTTS:
+    """
+    Uses android.speech.tts.TextToSpeech via pyjnius. Does nothing on
+    desktop (safe no-op) so the app can still be tested off-device.
+    """
+    def __init__(self):
+        self.engine = None
+        self.ready = False
+        if platform == "android":
+            try:
+                from jnius import autoclass, PythonJavaClass, java_method
+                TextToSpeech = autoclass("android.speech.tts.TextToSpeech")
+                PythonActivity = autoclass("org.kivy.android.PythonActivity")
+                Locale = autoclass("java.util.Locale")
+
+                class Listener(PythonJavaClass):
+                    __javainterfaces__ = ["android/speech/tts/TextToSpeech$OnInitListener"]
+                    __javacontext__ = "app"
+
+                    def __init__(self, outer):
+                        super().__init__()
+                        self.outer = outer
+
+                    @java_method("(I)V")
+                    def onInit(self, status):
+                        if status == 0:
+                            try:
+                                hindi = Locale("hi", "IN")
+                                self.outer.engine.setLanguage(hindi)
+                            except Exception:
+                                pass
+                            self.outer.ready = True
+
+                self._listener = Listener(self)
+                self.engine = TextToSpeech(PythonActivity.mActivity, self._listener)
+            except Exception:
+                self.engine = None
+
+    def speak(self, text):
+        if platform == "android" and self.engine and self.ready:
+            try:
+                from jnius import autoclass
+                TextToSpeech = autoclass("android.speech.tts.TextToSpeech")
+                self.engine.speak(text, TextToSpeech.QUEUE_FLUSH, None, None)
+            except Exception:
+                pass
+        # desktop / not-ready: silent no-op, UI text still updates
+
+
+# ---------------- Login Screen (PIN keypad UI) ----------------
 class LoginScreen(Screen):
     def __init__(self, expected_pass, on_success, **kwargs):
         super().__init__(**kwargs)
@@ -197,6 +379,7 @@ class LoginScreen(Screen):
             Clock.schedule_once(lambda dt: setattr(self.pin_display, 'text', ''), 1.2)
 
 
+# ---------------- Glowing orb + quick icons ----------------
 class GlowOrbCard(ButtonBehavior, FloatLayout):
     def __init__(self, on_tap, **kwargs):
         super().__init__(**kwargs)
@@ -262,11 +445,15 @@ class QuickIconButton(ButtonBehavior, BoxLayout):
             self._on_tap()
 
 
+# ---------------- Main Screen ----------------
 class MainScreen(Screen):
     def __init__(self, on_settings, **kwargs):
         super().__init__(**kwargs)
         self.db = DatabaseManager()
         self.router = SmartAIRouter()
+        self.onedrive = OneDriveClient()
+        self.media = MediaSearch()
+        self.tts = AndroidTTS()
         self.silent_mode = False
         self.on_settings = on_settings
 
@@ -303,10 +490,7 @@ class MainScreen(Screen):
         )
         root.add_widget(subtitle)
 
-        # NOTE: FloatLayout has no 'padding' property, so it must NOT be
-        # passed here. The card draws with a fixed inset instead.
-        orb_card = GlowOrbCard(on_tap=self.trigger_voice_listening,
-                                size_hint=(1, 0.32))
+        orb_card = GlowOrbCard(on_tap=self.trigger_voice_listening, size_hint=(1, 0.32))
         root.add_widget(orb_card)
 
         icons_grid = GridLayout(cols=3, rows=2, size_hint=(1, 0.22),
@@ -384,8 +568,17 @@ class MainScreen(Screen):
         if self.chat_display.text.endswith("प्रोसेसिंग..."):
             self.chat_display.text = self.chat_display.text[:-len("प्रोसेसिंग...")]
         self.chat_display.text += f"\n{prefix} {reply}\n"
+        if not self.silent_mode:
+            self.tts.speak(reply)
+
+    def handle_assist_intent(self, spoken_text):
+        # Called from JarvisApp when the app is launched via
+        # android.intent.action.ASSIST (see AndroidManifest intent-filter).
+        if spoken_text:
+            self.process_command(spoken_text)
 
 
+# ---------------- Settings ----------------
 class SettingsScreen(Screen):
     def __init__(self, on_back, **kwargs):
         super().__init__(**kwargs)
@@ -396,7 +589,7 @@ class SettingsScreen(Screen):
         root.bind(pos=self._sync_bg, size=self._sync_bg)
 
         lbl = Label(
-            text="Settings\n(coming in a later phase: API keys, voice, macros)",
+            text="Settings\n(macros, accessibility config coming next phase)",
             font_name=app_font(),
             color=(0.8, 0.7, 1, 1),
             font_size='16sp',
@@ -472,7 +665,27 @@ class JarvisApp(App):
             sm.add_widget(ErrorScreen(err_text, name='error'))
 
         self.sm = sm
+        self._check_assist_intent()
         return sm
+
+    def _check_assist_intent(self):
+        # If launched via ASSIST intent, forward any spoken text to MainScreen.
+        if platform != "android":
+            return
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+            activity = PythonActivity.mActivity
+            intent = activity.getIntent()
+            action = intent.getAction() if intent else None
+            if action == "android.intent.action.ASSIST":
+                extras = intent.getExtras()
+                spoken = None
+                if extras:
+                    spoken = extras.getString("android.intent.extra.ASSIST_CONTEXT")
+                Clock.schedule_once(lambda dt: self.main_screen.handle_assist_intent(spoken or "असिस्ट खोला गया"))
+        except Exception:
+            pass
 
     def go_main(self):
         self.sm.current = 'main'
