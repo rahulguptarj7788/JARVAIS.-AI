@@ -3,7 +3,7 @@ title = Jarvis AI
 package.name = jarvisai
 package.domain = com.jarvis.assistant
 source.dir = .
-source.include_exts = py,png,jpg,kv,atlas,xml,json,java
+source.include_exts = py,png,jpg,ttf,kv,atlas,xml,json,java
 source.include_patterns = assets/*,*.xml
 version = 1.0.0
 requirements = hostpython3==3.11.6,python3==3.11.6,kivy,requests,urllib3,certifi,pyjnius
@@ -20,6 +20,7 @@ android.sdk_path = /usr/local/lib/android/sdk
 android.ndk_path = /usr/local/lib/android/sdk/ndk/25.2.9519653
 android.private_storage = True
 android.androidx = True
+android.manifest.intent_filters = assets/extra_intent_filters.xml
 
 [buildozer]
 log_level = 2
