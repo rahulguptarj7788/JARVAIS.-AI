@@ -59,6 +59,26 @@ jobs:
         run: |
           echo "pip==24.0" > /home/runner/pip-constraints.txt
 
+      - name: Generate app_keys.json from secrets
+        run: |
+          cat > app_keys.json << EOF
+          {
+            "GROQ_API_KEY_1": "${{ secrets.GROQ_API_KEY_1 }}",
+            "GROQ_API_KEY_2": "${{ secrets.GROQ_API_KEY_2 }}",
+            "GEMINI_API_KEY_1": "${{ secrets.GEMINI_API_KEY_1 }}",
+            "GEMINI_API_KEY_2": "${{ secrets.GEMINI_API_KEY_2 }}",
+            "OPENROUTER_API_KEY_1": "${{ secrets.OPENROUTER_API_KEY_1 }}",
+            "OPENROUTER_API_KEY_2": "${{ secrets.OPENROUTER_API_KEY_2 }}",
+            "CEREBRAS_API_KEY_1": "${{ secrets.CEREBRAS_API_KEY_1 }}",
+            "CEREBRAS_API_KEY_2": "${{ secrets.CEREBRAS_API_KEY_2 }}",
+            "PIXABAY_API_KEY": "${{ secrets.PIXABAY_API_KEY }}",
+            "PEXELS_API_KEY": "${{ secrets.PEXELS_API_KEY }}",
+            "ONEDRIVE_CLIENT_ID": "${{ secrets.ONEDRIVE_CLIENT_ID }}",
+            "ONEDRIVE_CLIENT_SECRET": "${{ secrets.ONEDRIVE_CLIENT_SECRET }}",
+            "ONEDRIVE_REFRESH_TOKEN": "${{ secrets.ONEDRIVE_REFRESH_TOKEN }}"
+          }
+          EOF
+
       - name: Build APK with Buildozer
         env:
           PIP_NO_CACHE_DIR: "1"
