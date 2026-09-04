@@ -2,6 +2,7 @@ import os
 import json
 import threading
 import traceback
+import sqlite3
 from datetime import datetime
 from kivy import platform
 from kivy.app import App
@@ -23,11 +24,12 @@ from kivy.uix.widget import Widget
 from kivy.clock import Clock
 from kivy.graphics import Color, Rectangle, RoundedRectangle
 from kivy.core.text import LabelBase
-import sqlite3
 
 APP_PASS = "01062013"
 SETTINGS_PASS = "18112023"
 PACKAGE_NAME = "com.jarvis.assistant"
+DB_PATH = "jarvis_local.db"
+APP_KEYS_JSON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_keys.json")
 
 # ---------------- Devanagari font ----------------
 DEVANAGARI_FONT_NAME = "DevanagariFont"
@@ -51,10 +53,71 @@ def app_font():
     return DEVANAGARI_FONT_NAME if _font_registered else "Roboto"
 
 
+# ---------------- app_keys.json loader (build-time bundled secrets) ----------------
+_APP_KEYS_JSON = {}
+try:
+    if os.path.exists(APP_KEYS_JSON_PATH):
+        with open(APP_KEYS_JSON_PATH, "r", encoding="utf-8") as f:
+            _APP_KEYS_JSON = json.load(f)
+except Exception:
+    _APP_KEYS_JSON = {}
+
+# Maps a SECRET_NAME prefix to the provider name used in the SQLite
+# api_overrides table (populated via "set api <provider> <key>" in chat).
+_PROVIDER_PREFIX_MAP = {
+    "GROQ": "groq",
+    "GEMINI": "gemini",
+    "OPENROUTER": "openrouter",
+    "CEREBRAS": "cerebras",
+}
+
+
+def _lookup_sqlite_override(secret_name):
+    """If secret_name belongs to a known AI provider, check whether the
+    user has set a manual override for that provider via chat, and if so
+    return it. Returns None otherwise."""
+    provider = None
+    for prefix, provider_name in _PROVIDER_PREFIX_MAP.items():
+        if secret_name.startswith(prefix):
+            provider = provider_name
+            break
+    if not provider:
+        return None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT api_key FROM api_overrides WHERE provider = ?", (provider,))
+        row = cur.fetchone()
+        conn.close()
+        if row and row[0]:
+            return row[0]
+    except Exception:
+        pass
+    return None
+
+
+def load_key(name):
+    """
+    Resolves an API key / secret by name using this priority:
+    1. app_keys.json  (bundled into the APK at build time from GitHub Secrets)
+    2. SQLite api_overrides table (manually set via 'set api <provider> <key>')
+    3. os.environ (useful for desktop testing, no-op on Android release builds)
+    """
+    val = _APP_KEYS_JSON.get(name)
+    if val:
+        return val
+
+    val = _lookup_sqlite_override(name)
+    if val:
+        return val
+
+    return os.environ.get(name)
+
+
 # ---------------- Database (notes + persisted manual API keys) ----------------
 class DatabaseManager:
     def __init__(self):
-        self.conn = sqlite3.connect("jarvis_local.db", check_same_thread=False)
+        self.conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         self.create_tables()
 
     def create_tables(self):
@@ -92,10 +155,10 @@ class SmartAIRouter:
     def __init__(self):
         self.mode = "auto"  # 'auto' | 'groq' | 'gemini' | 'openrouter' | 'cerebras'
         self.providers = [
-            {"name": "groq", "keys": [os.environ.get("GROQ_API_KEY_1"), os.environ.get("GROQ_API_KEY_2")], "call": self._call_groq},
-            {"name": "gemini", "keys": [os.environ.get("GEMINI_API_KEY_1"), os.environ.get("GEMINI_API_KEY_2")], "call": self._call_gemini},
-            {"name": "openrouter", "keys": [os.environ.get("OPENROUTER_API_KEY_1"), os.environ.get("OPENROUTER_API_KEY_2")], "call": self._call_openrouter},
-            {"name": "cerebras", "keys": [os.environ.get("CEREBRAS_API_KEY_1"), os.environ.get("CEREBRAS_API_KEY_2")], "call": self._call_cerebras},
+            {"name": "groq", "keys": [load_key("GROQ_API_KEY_1"), load_key("GROQ_API_KEY_2")], "call": self._call_groq},
+            {"name": "gemini", "keys": [load_key("GEMINI_API_KEY_1"), load_key("GEMINI_API_KEY_2")], "call": self._call_gemini},
+            {"name": "openrouter", "keys": [load_key("OPENROUTER_API_KEY_1"), load_key("OPENROUTER_API_KEY_2")], "call": self._call_openrouter},
+            {"name": "cerebras", "keys": [load_key("CEREBRAS_API_KEY_1"), load_key("CEREBRAS_API_KEY_2")], "call": self._call_cerebras},
         ]
         self.key_index = {p["name"]: 0 for p in self.providers}
 
@@ -189,9 +252,9 @@ class SmartAIRouter:
 # ---------------- OneDrive ----------------
 class OneDriveClient:
     def __init__(self):
-        self.client_id = os.environ.get("ONEDRIVE_CLIENT_ID")
-        self.client_secret = os.environ.get("ONEDRIVE_CLIENT_SECRET")
-        self.refresh_token = os.environ.get("ONEDRIVE_REFRESH_TOKEN")
+        self.client_id = load_key("ONEDRIVE_CLIENT_ID")
+        self.client_secret = load_key("ONEDRIVE_CLIENT_SECRET")
+        self.refresh_token = load_key("ONEDRIVE_REFRESH_TOKEN")
         self.access_token = None
         self.last_sync_time = None
 
@@ -235,8 +298,8 @@ class OneDriveClient:
 # ---------------- Media search ----------------
 class MediaSearch:
     def __init__(self):
-        self.pexels_key = os.environ.get("PEXELS_API_KEY")
-        self.pixabay_key = os.environ.get("PIXABAY_API_KEY")
+        self.pexels_key = load_key("PEXELS_API_KEY")
+        self.pixabay_key = load_key("PIXABAY_API_KEY")
 
     def search_pexels(self, query):
         import requests
@@ -578,6 +641,8 @@ class MainScreen(Screen):
             "About Jarvis AI\n\n"
             "- Multi-provider AI router (Groq, Gemini, OpenRouter, Cerebras) "
             "with auto key rotation and failover.\n"
+            "- Keys load from app_keys.json (build-time), then manual "
+            "overrides in SQLite, then os.environ.\n"
             "- Manual keys via 'set api <provider> <key>' persist in local SQLite.\n"
             "- Local SQLite note storage.\n"
             "- OneDrive cloud sync.\n"
