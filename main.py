@@ -1,4 +1,5 @@
 import os
+import json
 import threading
 import traceback
 from datetime import datetime
@@ -20,12 +21,13 @@ from kivy.uix.image import Image
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.widget import Widget
 from kivy.clock import Clock
-from kivy.graphics import Color, Rectangle
+from kivy.graphics import Color, Rectangle, RoundedRectangle
 from kivy.core.text import LabelBase
 import sqlite3
 
 APP_PASS = "01062013"
 SETTINGS_PASS = "18112023"
+PACKAGE_NAME = "com.jarvis.assistant"
 
 # ---------------- Devanagari font ----------------
 DEVANAGARI_FONT_NAME = "DevanagariFont"
@@ -49,7 +51,7 @@ def app_font():
     return DEVANAGARI_FONT_NAME if _font_registered else "Roboto"
 
 
-# ---------------- Database ----------------
+# ---------------- Database (notes + persisted manual API keys) ----------------
 class DatabaseManager:
     def __init__(self):
         self.conn = sqlite3.connect("jarvis_local.db", check_same_thread=False)
@@ -60,12 +62,29 @@ class DatabaseManager:
         cur.execute("""CREATE TABLE IF NOT EXISTS notes (
             id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT,
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, synced INTEGER DEFAULT 0)""")
+        cur.execute("""CREATE TABLE IF NOT EXISTS api_overrides (
+            provider TEXT PRIMARY KEY, api_key TEXT,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)""")
         self.conn.commit()
 
     def add_note(self, content):
         cur = self.conn.cursor()
         cur.execute("INSERT INTO notes (content) VALUES (?)", (content,))
         self.conn.commit()
+
+    def save_override(self, provider, key):
+        cur = self.conn.cursor()
+        cur.execute(
+            "INSERT INTO api_overrides (provider, api_key, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(provider) DO UPDATE SET api_key=excluded.api_key, updated_at=excluded.updated_at",
+            (provider, key, datetime.now().isoformat())
+        )
+        self.conn.commit()
+
+    def load_overrides(self):
+        cur = self.conn.cursor()
+        cur.execute("SELECT provider, api_key FROM api_overrides")
+        return {row[0]: row[1] for row in cur.fetchall()}
 
 
 # ---------------- Smart AI Router ----------------
@@ -91,6 +110,10 @@ class SmartAIRouter:
                 return True
         return False
 
+    def load_persisted_keys(self, overrides: dict):
+        for provider_name, key in overrides.items():
+            self.set_manual_key(provider_name, key)
+
     def _next_key(self, provider):
         keys = [k for k in provider["keys"] if k]
         if not keys:
@@ -99,21 +122,26 @@ class SmartAIRouter:
         self.key_index[provider["name"]] += 1
         return keys[idx]
 
+    def _raise_for_http(self, res, provider_name):
+        if res.status_code >= 400:
+            snippet = res.text[:200] if res.text else ""
+            raise Exception(f"{provider_name} HTTP {res.status_code}: {snippet}")
+
     def _call_groq(self, key, prompt):
         import requests
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-        payload = {"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": prompt}]}
-        res = requests.post(url, json=payload, headers=headers, timeout=8)
-        res.raise_for_status()
+        payload = {"model": "llama3-8b-8192", "messages": [{"role": "user", "content": prompt}]}
+        res = requests.post(url, json=payload, headers=headers, timeout=10, verify=False)
+        self._raise_for_http(res, "Groq")
         return res.json()["choices"][0]["message"]["content"]
 
     def _call_gemini(self, key, prompt):
         import requests
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={key}"
         payload = {"contents": [{"parts": [{"text": prompt}]}]}
-        res = requests.post(url, json=payload, timeout=8)
-        res.raise_for_status()
+        res = requests.post(url, json=payload, timeout=10, verify=False)
+        self._raise_for_http(res, "Gemini")
         return res.json()["candidates"][0]["content"]["parts"][0]["text"]
 
     def _call_openrouter(self, key, prompt):
@@ -121,8 +149,8 @@ class SmartAIRouter:
         url = "https://openrouter.ai/api/v1/chat/completions"
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
         payload = {"model": "deepseek/deepseek-r1", "messages": [{"role": "user", "content": prompt}]}
-        res = requests.post(url, json=payload, headers=headers, timeout=8)
-        res.raise_for_status()
+        res = requests.post(url, json=payload, headers=headers, timeout=10, verify=False)
+        self._raise_for_http(res, "OpenRouter")
         return res.json()["choices"][0]["message"]["content"]
 
     def _call_cerebras(self, key, prompt):
@@ -130,23 +158,32 @@ class SmartAIRouter:
         url = "https://api.cerebras.ai/v1/chat/completions"
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
         payload = {"model": "llama-3.3-70b", "messages": [{"role": "user", "content": prompt}]}
-        res = requests.post(url, json=payload, headers=headers, timeout=8)
-        res.raise_for_status()
+        res = requests.post(url, json=payload, headers=headers, timeout=10, verify=False)
+        self._raise_for_http(res, "Cerebras")
         return res.json()["choices"][0]["message"]["content"]
 
     def ask(self, prompt):
         order = self.providers
         if self.mode != "auto":
             order = [p for p in self.providers if p["name"] == self.mode] or self.providers
+
+        errors = []
+        tried_any_key = False
         for provider in order:
             key = self._next_key(provider)
             if not key:
+                errors.append(f"{provider['name']}: कोई API key सेट नहीं है")
                 continue
+            tried_any_key = True
             try:
                 return provider["call"](key, prompt)
-            except Exception:
+            except Exception as e:
+                errors.append(f"{provider['name']}: {str(e)}")
                 continue
-        return "ऑफ़लाइन मोड: सभी API राउट विफल रहे।"
+
+        if not tried_any_key:
+            return "ERROR:किसी भी provider की API key नहीं मिली।\n" + "\n".join(errors)
+        return "ERROR:सभी providers विफल रहे —\n" + "\n".join(errors)
 
 
 # ---------------- OneDrive ----------------
@@ -170,7 +207,7 @@ class OneDriveClient:
                 "refresh_token": self.refresh_token, "grant_type": "refresh_token",
                 "scope": "Files.ReadWrite offline_access"}
         try:
-            res = requests.post(url, data=data, timeout=10)
+            res = requests.post(url, data=data, timeout=10, verify=False)
             res.raise_for_status()
             self.access_token = res.json().get("access_token")
             return self.access_token
@@ -186,7 +223,7 @@ class OneDriveClient:
         headers = {"Authorization": f"Bearer {token}"}
         try:
             with open(local_path, "rb") as f:
-                res = requests.put(url, headers=headers, data=f, timeout=20)
+                res = requests.put(url, headers=headers, data=f, timeout=20, verify=False)
             if res.status_code in (200, 201):
                 self.last_sync_time = datetime.now().strftime("%d-%m-%Y %H:%M")
                 return True
@@ -207,7 +244,8 @@ class MediaSearch:
             return []
         headers = {"Authorization": self.pexels_key}
         try:
-            res = requests.get(f"https://api.pexels.com/v1/search?query={query}&per_page=5", headers=headers, timeout=8)
+            res = requests.get(f"https://api.pexels.com/v1/search?query={query}&per_page=5",
+                                headers=headers, timeout=8, verify=False)
             res.raise_for_status()
             return [p["src"]["medium"] for p in res.json().get("photos", [])]
         except Exception:
@@ -218,7 +256,8 @@ class MediaSearch:
         if not self.pixabay_key:
             return []
         try:
-            res = requests.get(f"https://pixabay.com/api/?key={self.pixabay_key}&q={query}&per_page=5", timeout=8)
+            res = requests.get(f"https://pixabay.com/api/?key={self.pixabay_key}&q={query}&per_page=5",
+                                timeout=8, verify=False)
             res.raise_for_status()
             return [h["webformatURL"] for h in res.json().get("hits", [])]
         except Exception:
@@ -267,6 +306,31 @@ class AndroidTTS:
                 self.engine.speak(text, TextToSpeech.QUEUE_FLUSH, None, None)
             except Exception:
                 pass
+
+
+# ---------------- Android settings-intent helper ----------------
+def open_android_settings(action, use_package_uri=False):
+    if platform != "android":
+        return False, "Desktop mode: यह सिर्फ़ Android डिवाइस पर काम करता है।"
+    try:
+        from jnius import autoclass
+        Intent = autoclass("android.content.Intent")
+        Settings = autoclass("android.provider.Settings")
+        PythonActivity = autoclass("org.kivy.android.PythonActivity")
+        activity = PythonActivity.mActivity
+
+        action_value = getattr(Settings, action)
+        intent = Intent(action_value)
+
+        if use_package_uri:
+            Uri = autoclass("android.net.Uri")
+            uri = Uri.fromParts("package", PACKAGE_NAME, None)
+            intent.setData(uri)
+
+        activity.startActivity(intent)
+        return True, "खोला जा रहा है..."
+    except Exception as e:
+        return False, f"Error: {str(e)}"
 
 
 # ---------------- Login Screen ----------------
@@ -358,7 +422,6 @@ class QuickIconButton(ButtonBehavior, BoxLayout):
     def __init__(self, label_text, on_tap, **kwargs):
         super().__init__(orientation='vertical', **kwargs)
         self._on_tap = on_tap
-        from kivy.graphics import RoundedRectangle
         with self.canvas.before:
             Color(0.22, 0.1, 0.35, 1)
             self._bg = RoundedRectangle(pos=self.pos, size=self.size, radius=[14])
@@ -386,6 +449,7 @@ class MainScreen(Screen):
         super().__init__(**kwargs)
         self.db = DatabaseManager()
         self.router = SmartAIRouter()
+        self.router.load_persisted_keys(self.db.load_overrides())
         self.onedrive = OneDriveClient()
         self.media = MediaSearch()
         self.tts = AndroidTTS()
@@ -395,7 +459,6 @@ class MainScreen(Screen):
 
         outer = FloatLayout()
 
-        # ---- Main content column ----
         content = BoxLayout(orientation='vertical', size_hint=(1, 1))
         with content.canvas.before:
             Color(0.04, 0.02, 0.08, 1)
@@ -422,7 +485,6 @@ class MainScreen(Screen):
                           color=(0.6, 0.5, 0.75, 1), size_hint=(1, None), height=30)
         content.add_widget(subtitle)
 
-        # margin between subtitle and orb
         content.add_widget(Widget(size_hint=(1, None), height=dp(28)))
 
         orb_wrap = AnchorLayout(size_hint=(1, 0.34))
@@ -443,17 +505,16 @@ class MainScreen(Screen):
             icons_grid.add_widget(btn)
         content.add_widget(icons_grid)
 
-        scroll = ScrollView(size_hint=(1, 1))
-        self.chat_display = Label(text="", font_name=app_font(), color=(1, 1, 1, 1), font_size='14sp',
+        self.chat_scroll = ScrollView(size_hint=(1, 1), do_scroll_x=False)
+        self.chat_display = Label(text="", markup=True, font_name=app_font(), color=(1, 1, 1, 1), font_size='14sp',
                                    size_hint=(1, None), halign='left', valign='top', padding=[15, 10])
         self.chat_display.bind(
             width=lambda inst, val: setattr(inst, 'text_size', (val, None)),
-            texture_size=lambda inst, val: setattr(inst, 'height', val[1])
+            texture_size=self._on_chat_texture_size
         )
-        scroll.add_widget(self.chat_display)
-        content.add_widget(scroll)
+        self.chat_scroll.add_widget(self.chat_display)
+        content.add_widget(self.chat_scroll)
 
-        # ---- Bottom chat input bar (Gemini-style) ----
         input_bar = BoxLayout(orientation='horizontal', size_hint=(1, None), height=54,
                                padding=[10, 8, 10, 8], spacing=8)
         with input_bar.canvas.before:
@@ -482,7 +543,6 @@ class MainScreen(Screen):
         content.add_widget(input_bar)
         outer.add_widget(content)
 
-        # ---- Side drawer (overlay, no Settings item) ----
         self.drawer = BoxLayout(orientation='vertical', size_hint=(None, 1),
                                  width=self.DRAWER_WIDTH, x=-self.DRAWER_WIDTH,
                                  padding=18, spacing=16)
@@ -518,11 +578,10 @@ class MainScreen(Screen):
             "About Jarvis AI\n\n"
             "- Multi-provider AI router (Groq, Gemini, OpenRouter, Cerebras) "
             "with auto key rotation and failover.\n"
+            "- Manual keys via 'set api <provider> <key>' persist in local SQLite.\n"
             "- Local SQLite note storage.\n"
-            "- OneDrive cloud sync (client credentials + refresh token).\n"
-            "- Android native TTS (Hindi) for spoken replies.\n"
-            "- Type 'set api <provider> <key>' in the chat box to override "
-            "a key for this session only."
+            "- OneDrive cloud sync.\n"
+            "- Android native TTS (Hindi)."
         )
         about_lbl = Label(text=about_text, font_size='12sp', color=(0.65, 0.6, 0.75, 1),
                            size_hint=(1, None), halign='left', valign='top')
@@ -547,6 +606,10 @@ class MainScreen(Screen):
     def _sync_drawer_bg(self, instance, value):
         self._drawer_bg.pos = instance.pos
         self._drawer_bg.size = instance.size
+
+    def _on_chat_texture_size(self, instance, value):
+        instance.height = value[1]
+        Clock.schedule_once(lambda dt: setattr(self.chat_scroll, 'scroll_y', 0), 0)
 
     def toggle_drawer(self):
         target_x = 0 if not self.drawer_open else -self.DRAWER_WIDTH
@@ -582,17 +645,16 @@ class MainScreen(Screen):
         key = parts[3]
         ok = self.router.set_manual_key(provider, key)
         if ok:
-            self._append_system_msg(f"{provider} API key अपडेट हो गई (इस सेशन के लिए)।")
+            self.db.save_override(provider, key)
+            self._append_system_msg(f"{provider} API key सेव हो गई (restart के बाद भी रहेगी)।")
         else:
             self._append_system_msg(f"अज्ञात provider: {provider}")
 
     def _append_system_msg(self, msg):
-        self.chat_display.markup = True
         self.chat_display.text += f"\n[color=#b06bffff]System:[/color] {msg}\n"
 
     def process_command(self, text):
-        self.chat_display.markup = True
-        self.chat_display.text += f"\n[color=#b06bffff]You:[/color] {text}\nप्रोसेसिंग..."
+        self.chat_display.text += f"\n[color=#4fd1ff]You:[/color] {text}\nप्रोसेसिंग..."
         threading.Thread(target=self._async_process, args=(text,), daemon=True).start()
 
     def _async_process(self, text):
@@ -606,37 +668,68 @@ class MainScreen(Screen):
         Clock.schedule_once(lambda dt: self._update_reply(reply))
 
     def _update_reply(self, reply):
-        prefix = "[UI-Only Mode]" if self.silent_mode else "Jarvis:"
         if self.chat_display.text.endswith("प्रोसेसिंग..."):
             self.chat_display.text = self.chat_display.text[:-len("प्रोसेसिंग...")]
-        self.chat_display.text += f"\n{prefix} {reply}\n"
-        if not self.silent_mode:
-            self.tts.speak(reply)
+
+        if reply.startswith("ERROR:"):
+            clean = reply[len("ERROR:"):]
+            self.chat_display.text += f"\n[color=#ff5c5c]Error:[/color] {clean}\n"
+        else:
+            prefix = "[UI-Only Mode]" if self.silent_mode else "[color=#b06bffff]Jarvis:[/color]"
+            self.chat_display.text += f"\n{prefix} {reply}\n"
+            if not self.silent_mode:
+                self.tts.speak(reply)
 
     def handle_assist_intent(self, spoken_text):
         if spoken_text:
             self.process_command(spoken_text)
 
 
-# ---------------- Settings (password-protected, from header gear icon only) ----------------
+# ---------------- Settings (password-protected) ----------------
 class SettingsScreen(Screen):
     def __init__(self, on_back, **kwargs):
         super().__init__(**kwargs)
-        root = BoxLayout(orientation='vertical', padding=20, spacing=20)
+        root = BoxLayout(orientation='vertical', padding=20, spacing=16)
         with root.canvas.before:
             Color(0.04, 0.02, 0.08, 1)
             self._bg = Rectangle(pos=root.pos, size=root.size)
         root.bind(pos=self._sync_bg, size=self._sync_bg)
 
-        lbl = Label(text="Settings\n(macros, accessibility config coming next phase)",
-                    font_name=app_font(), color=(0.8, 0.7, 1, 1), font_size='16sp', halign='center')
-        lbl.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
-        root.add_widget(lbl)
+        title_lbl = Label(text="Settings", font_name=app_font(), color=(0.8, 0.7, 1, 1),
+                           font_size='20sp', size_hint=(1, None), height=40)
+        root.add_widget(title_lbl)
 
-        back_btn = Button(text="Back", size_hint=(1, None), height=50, background_color=(0.55, 0.15, 0.9, 1))
+        self.status_lbl = Label(text="", font_size='13sp', color=(0.7, 0.9, 0.7, 1),
+                                 size_hint=(1, None), height=40, halign='center')
+        self.status_lbl.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
+        root.add_widget(self.status_lbl)
+
+        voice_btn = Button(text="Set Default Voice Assistant", size_hint=(1, None), height=55,
+                            background_color=(0.55, 0.15, 0.9, 1))
+        voice_btn.bind(on_release=lambda inst: self._run_intent("ACTION_VOICE_INPUT_SETTINGS", False))
+        root.add_widget(voice_btn)
+
+        accessibility_btn = Button(text="Enable Accessibility Service", size_hint=(1, None), height=55,
+                                    background_color=(0.55, 0.15, 0.9, 1))
+        accessibility_btn.bind(on_release=lambda inst: self._run_intent("ACTION_ACCESSIBILITY_SETTINGS", False))
+        root.add_widget(accessibility_btn)
+
+        perms_btn = Button(text="App Permissions (Mic / Overlay / Notifications)", size_hint=(1, None), height=55,
+                            background_color=(0.55, 0.15, 0.9, 1))
+        perms_btn.bind(on_release=lambda inst: self._run_intent("ACTION_APPLICATION_DETAILS_SETTINGS", True))
+        root.add_widget(perms_btn)
+
+        root.add_widget(Widget(size_hint=(1, 1)))
+
+        back_btn = Button(text="Back", size_hint=(1, None), height=50, background_color=(0.35, 0.1, 0.55, 1))
         back_btn.bind(on_release=lambda inst: on_back())
         root.add_widget(back_btn)
         self.add_widget(root)
+
+    def _run_intent(self, action, use_package_uri):
+        ok, msg = open_android_settings(action, use_package_uri)
+        self.status_lbl.color = (0.7, 0.9, 0.7, 1) if ok else (1, 0.5, 0.5, 1)
+        self.status_lbl.text = msg
 
     def _sync_bg(self, instance, value):
         self._bg.pos = instance.pos
