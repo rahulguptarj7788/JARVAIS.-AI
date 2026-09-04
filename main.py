@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import threading
 import time
@@ -28,7 +29,6 @@ from kivy.clock import Clock
 from kivy.graphics import Color, Rectangle, RoundedRectangle
 from kivy.core.text import LabelBase
 
-# Keep the focused TextInput visible above the soft keyboard.
 Window.softinput_mode = 'below_target'
 
 APP_PASS = "01062013"
@@ -37,10 +37,28 @@ PACKAGE_NAME = "com.jarvis.assistant"
 DB_PATH = "jarvis_local.db"
 APP_KEYS_JSON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_keys.json")
 
-# ---- Theme colors (matched to orb.png background: #120924 / #0D071B) ----
-BG_DARK = (0.051, 0.027, 0.106, 1)      # #0D071B
-BG_PANEL = (0.071, 0.035, 0.141, 1)     # #120924
-ACCENT_PURPLE = (0.42, 0.15, 0.85, 1)   # #6B26D9
+BG_DARK = (0.051, 0.027, 0.106, 1)
+BG_PANEL = (0.071, 0.035, 0.141, 1)
+ACCENT_PURPLE = (0.42, 0.15, 0.85, 1)
+
+# ---------------- Jarvis persona system prompt (sent to every AI call) ----------------
+SYSTEM_PROMPT_JARVIS = (
+    "You are Jarvis, a highly capable AI assistant powering a mobile app. "
+    "Always identify yourself as Jarvis. Never mention Claude, ChatGPT, Gemini, "
+    "Llama, or any underlying model/provider name. Maintain a helpful, respectful, "
+    "futuristic assistant tone. Match the user's language (Hindi, English, or "
+    "Hinglish) based on how they wrote to you. Keep responses clean and structured "
+    "-- never output internal reasoning, <think> tags, or meta-commentary."
+)
+
+
+def strip_think_tags(text):
+    if not text:
+        return text
+    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"</?think>", "", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip()
+
 
 # ---------------- Devanagari font ----------------
 DEVANAGARI_FONT_NAME = "DevanagariFont"
@@ -64,7 +82,7 @@ def app_font():
     return DEVANAGARI_FONT_NAME if _font_registered else "Roboto"
 
 
-# ---------------- app_keys.json + SQLite override + env loader ----------------
+# ---------------- Key loading ----------------
 _APP_KEYS_JSON = {}
 try:
     if os.path.exists(APP_KEYS_JSON_PATH):
@@ -73,12 +91,7 @@ try:
 except Exception:
     _APP_KEYS_JSON = {}
 
-_PROVIDER_PREFIX_MAP = {
-    "GROQ": "groq",
-    "GEMINI": "gemini",
-    "OPENROUTER": "openrouter",
-    "CEREBRAS": "cerebras",
-}
+_PROVIDER_PREFIX_MAP = {"GROQ": "groq", "GEMINI": "gemini", "OPENROUTER": "openrouter", "CEREBRAS": "cerebras"}
 
 
 def _lookup_sqlite_override(secret_name):
@@ -112,7 +125,6 @@ def load_key(name):
     return os.environ.get(name)
 
 
-# ---------------- Android Toast helper ----------------
 def show_toast(message):
     if platform != "android":
         return
@@ -124,8 +136,7 @@ def show_toast(message):
         activity = PythonActivity.mActivity
 
         def _show():
-            toast = Toast.makeText(activity, String(message), Toast.LENGTH_LONG)
-            toast.show()
+            Toast.makeText(activity, String(message), Toast.LENGTH_LONG).show()
 
         activity.runOnUiThread(_show)
     except Exception:
@@ -168,37 +179,21 @@ class DatabaseManager:
         return {row[0]: row[1] for row in cur.fetchall()}
 
 
-# ---------------- Smart AI Router (deterministic key+model failover) ----------------
+# ---------------- Smart AI Router ----------------
 class SmartAIRouter:
     SKIP_STATUS_CODES = {400, 401, 402, 404}
 
     def __init__(self):
-        self.mode = "auto"  # 'auto' | 'gemini' | 'groq' | 'openrouter' | 'cerebras'
+        self.mode = "auto"
         self.providers = [
-            {
-                "name": "gemini",
-                "keys": [load_key("GEMINI_API_KEY_1"), load_key("GEMINI_API_KEY_2")],
-                "models": ["gemini-2.5-flash", "gemini-3.6-flash"],
-                "call": self._call_gemini,
-            },
-            {
-                "name": "groq",
-                "keys": [load_key("GROQ_API_KEY_1"), load_key("GROQ_API_KEY_2")],
-                "models": ["qwen/qwen3.6-27b", "openai/gpt-oss-120b"],
-                "call": self._call_groq,
-            },
-            {
-                "name": "openrouter",
-                "keys": [load_key("OPENROUTER_API_KEY_1"), load_key("OPENROUTER_API_KEY_2")],
-                "models": ["google/gemini-2.5-flash:free", "meta-llama/llama-3.3-70b-instruct:free"],
-                "call": self._call_openrouter,
-            },
-            {
-                "name": "cerebras",
-                "keys": [load_key("CEREBRAS_API_KEY_1"), load_key("CEREBRAS_API_KEY_2")],
-                "models": ["qwen-3.8-27b", "gemma-4-31b"],
-                "call": self._call_cerebras,
-            },
+            {"name": "gemini", "keys": [load_key("GEMINI_API_KEY_1"), load_key("GEMINI_API_KEY_2")],
+             "models": ["gemini-2.5-flash", "gemini-3.6-flash"], "call": self._call_gemini},
+            {"name": "groq", "keys": [load_key("GROQ_API_KEY_1"), load_key("GROQ_API_KEY_2")],
+             "models": ["qwen/qwen3.6-27b", "openai/gpt-oss-120b"], "call": self._call_groq},
+            {"name": "openrouter", "keys": [load_key("OPENROUTER_API_KEY_1"), load_key("OPENROUTER_API_KEY_2")],
+             "models": ["google/gemini-2.5-flash:free", "meta-llama/llama-3.3-70b-instruct:free"], "call": self._call_openrouter},
+            {"name": "cerebras", "keys": [load_key("CEREBRAS_API_KEY_1"), load_key("CEREBRAS_API_KEY_2")],
+             "models": ["qwen-3.8-27b", "gemma-4-31b"], "call": self._call_cerebras},
         ]
 
     def set_mode(self, mode):
@@ -224,7 +219,10 @@ class SmartAIRouter:
     def _call_gemini(self, key, model, prompt):
         import requests
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-        payload = {"contents": [{"parts": [{"text": prompt}]}]}
+        payload = {
+            "system_instruction": {"parts": [{"text": SYSTEM_PROMPT_JARVIS}]},
+            "contents": [{"parts": [{"text": prompt}]}]
+        }
         res = requests.post(url, json=payload, timeout=10, verify=False)
         return res, (lambda r: r.json()["candidates"][0]["content"]["parts"][0]["text"])
 
@@ -232,7 +230,10 @@ class SmartAIRouter:
         import requests
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-        payload = {"model": model, "messages": [{"role": "user", "content": prompt}]}
+        payload = {"model": model, "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT_JARVIS},
+            {"role": "user", "content": prompt}
+        ]}
         res = requests.post(url, json=payload, headers=headers, timeout=10, verify=False)
         return res, (lambda r: r.json()["choices"][0]["message"]["content"])
 
@@ -240,7 +241,10 @@ class SmartAIRouter:
         import requests
         url = "https://openrouter.ai/api/v1/chat/completions"
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-        payload = {"model": model, "messages": [{"role": "user", "content": prompt}]}
+        payload = {"model": model, "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT_JARVIS},
+            {"role": "user", "content": prompt}
+        ]}
         res = requests.post(url, json=payload, headers=headers, timeout=10, verify=False)
         return res, (lambda r: r.json()["choices"][0]["message"]["content"])
 
@@ -248,7 +252,10 @@ class SmartAIRouter:
         import requests
         url = "https://api.cerebras.ai/v1/chat/completions"
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-        payload = {"model": model, "messages": [{"role": "user", "content": prompt}]}
+        payload = {"model": model, "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT_JARVIS},
+            {"role": "user", "content": prompt}
+        ]}
         res = requests.post(url, json=payload, headers=headers, timeout=10, verify=False)
         return res, (lambda r: r.json()["choices"][0]["message"]["content"])
 
@@ -276,11 +283,9 @@ class SmartAIRouter:
                     status = self._status_of(res)
                     if status and status >= 400:
                         errors.append(f"{provider['name']}/{model}: HTTP {status}")
-                        if status in self.SKIP_STATUS_CODES:
-                            continue
                         continue
                     try:
-                        return extractor(res)
+                        return strip_think_tags(extractor(res))
                     except Exception as e:
                         errors.append(f"{provider['name']}/{model}: parse error {str(e)}")
                         continue
@@ -418,13 +423,8 @@ class AndroidTTS:
                 pass
 
 
-# ---------------- In-app wake-word listener (foreground only) ----------------
+# ---------------- Wake-word listener (foreground only) ----------------
 class WakeWordListener:
-    """
-    Loops android.speech.SpeechRecognizer while `enabled` is True and the
-    app is alive. This is NOT a true background OS service -- listening
-    stops if the app is killed or fully backgrounded by the OS.
-    """
     def __init__(self, on_wake):
         self.on_wake = on_wake
         self.enabled = False
@@ -449,7 +449,6 @@ class WakeWordListener:
             RecognizerIntent = autoclass("android.speech.RecognizerIntent")
             PythonActivity = autoclass("org.kivy.android.PythonActivity")
             Intent = autoclass("android.content.Intent")
-            Locale = autoclass("java.util.Locale")
             activity = PythonActivity.mActivity
 
             class RecognitionListener(PythonJavaClass):
@@ -508,8 +507,7 @@ class WakeWordListener:
             recognizer.setRecognitionListener(listener)
 
             intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
-            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                             RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "hi-IN")
 
             while self.enabled:
@@ -545,6 +543,41 @@ def open_android_settings(action, use_package_uri=False):
         return True, "खोला जा रहा है..."
     except Exception as e:
         return False, f"Error: {str(e)}"
+
+
+# ---------------- Simple app-launch commands (no AI call, no raw links) ----------------
+APP_LAUNCH_MAP = {
+    "youtube": ("com.google.android.youtube", "YouTube"),
+    "यूट्यूब": ("com.google.android.youtube", "YouTube"),
+    "notes": ("com.google.android.keep", "Notes"),
+    "नोट्स ऐप": ("com.google.android.keep", "Notes"),
+    "whatsapp": ("com.whatsapp", "WhatsApp"),
+    "व्हाट्सएप": ("com.whatsapp", "WhatsApp"),
+}
+
+
+def try_launch_app(text):
+    """Returns a short confirmation string if text matched a known app-open
+    command and (on Android) launches it; otherwise returns None so the
+    caller falls back to the AI router."""
+    cmd = text.lower()
+    for keyword, (package, display_name) in APP_LAUNCH_MAP.items():
+        if keyword in cmd and ("खोलो" in cmd or "open" in cmd or "kholo" in cmd):
+            if platform == "android":
+                try:
+                    from jnius import autoclass
+                    PythonActivity = autoclass("org.kivy.android.PythonActivity")
+                    activity = PythonActivity.mActivity
+                    pm = activity.getPackageManager()
+                    launch_intent = pm.getLaunchIntentForPackage(package)
+                    if launch_intent:
+                        activity.startActivity(launch_intent)
+                        return f"{display_name} खोल रहा हूँ।"
+                    return f"{display_name} इस डिवाइस पर इंस्टॉल नहीं है।"
+                except Exception as e:
+                    return f"{display_name} खोलने में समस्या: {str(e)}"
+            return f"{display_name} खोल रहा हूँ। (Desktop mode: सिर्फ़ Android पर काम करता है)"
+    return None
 
 
 # ---------------- Login Screen ----------------
@@ -631,7 +664,7 @@ class OrbButton(ButtonBehavior, Image):
             self._on_tap()
 
 
-# ---------------- Quick command icon (rounded dark purple card) ----------------
+# ---------------- Quick command icon ----------------
 class QuickIconButton(ButtonBehavior, BoxLayout):
     def __init__(self, label_text, on_tap, **kwargs):
         super().__init__(orientation='vertical', **kwargs)
@@ -639,8 +672,6 @@ class QuickIconButton(ButtonBehavior, BoxLayout):
         with self.canvas.before:
             Color(*BG_PANEL)
             self._bg = RoundedRectangle(pos=self.pos, size=self.size, radius=[16])
-            Color(*ACCENT_PURPLE)
-            self._border = RoundedRectangle(pos=self.pos, size=self.size, radius=[16])
         self.bind(pos=self._sync, size=self._sync)
 
         lbl = Label(text=label_text, font_name=app_font(), color=(0.9, 0.82, 1, 1),
@@ -692,25 +723,27 @@ class MainScreen(Screen):
         header.add_widget(title)
 
         settings_btn = Button(text="⚙", font_size='20sp', size_hint=(None, 1), width=50,
-                               background_color=(0, 0, 0, 0), background_normal='',
-                               color=ACCENT_PURPLE)
+                               background_color=(0, 0, 0, 0), background_normal='', color=ACCENT_PURPLE)
         settings_btn.bind(on_release=lambda inst: self.on_settings())
         header.add_widget(settings_btn)
         content.add_widget(header)
+
+        # extra top padding so subtitle clears the header
+        content.add_widget(Widget(size_hint=(1, None), height=dp(10)))
 
         subtitle = Label(text="YOUR INTELLIGENT VOICE ASSISTANT", font_size='12sp',
                           color=(0.6, 0.5, 0.75, 1), size_hint=(1, None), height=30)
         content.add_widget(subtitle)
 
-        content.add_widget(Widget(size_hint=(1, None), height=dp(28)))
+        content.add_widget(Widget(size_hint=(1, None), height=dp(20)))
 
-        orb_wrap = AnchorLayout(size_hint=(1, 0.30))
-        orb_btn = OrbButton(on_tap=self.trigger_voice_listening,
-                             size_hint=(0.94, 1))
+        # Glow orb container now ~42% of screen height
+        orb_wrap = AnchorLayout(size_hint=(1, 0.42))
+        orb_btn = OrbButton(on_tap=self.trigger_voice_listening, size_hint=(0.94, 1))
         orb_wrap.add_widget(orb_btn)
         content.add_widget(orb_wrap)
 
-        icons_grid = GridLayout(cols=5, rows=1, size_hint=(1, 0.14), spacing=8, padding=[10, 8, 10, 8])
+        icons_grid = GridLayout(cols=5, rows=1, size_hint=(1, 0.12), spacing=8, padding=[10, 8, 10, 8])
         quick_actions = [
             ("नोट्स", "नोट लो"),
             ("अलार्म", "अलार्म सेट करो"),
@@ -733,35 +766,40 @@ class MainScreen(Screen):
         self.chat_scroll.add_widget(self.chat_display)
         content.add_widget(self.chat_scroll)
 
-        input_bar = BoxLayout(orientation='horizontal', size_hint=(1, None), height=58,
-                               padding=[10, 6, 10, 10], spacing=8)
+        # ---- Capsule chat bar with mic icon ----
+        input_bar = BoxLayout(orientation='horizontal', size_hint=(1, None), height=dp(54),
+                               padding=[16, 4, 6, 4], spacing=8)
         with input_bar.canvas.before:
             Color(*BG_PANEL)
-            self._input_bar_bg = RoundedRectangle(pos=input_bar.pos, size=input_bar.size, radius=[18])
+            self._input_bar_bg = RoundedRectangle(pos=input_bar.pos, size=input_bar.size, radius=[dp(27)])
         input_bar.bind(pos=self._sync_input_bar, size=self._sync_input_bar)
 
         self.chat_input = TextInput(
             hint_text="टाइप करें या 'set api gemini KEY' भेजें",
             multiline=False,
             size_hint=(1, 1),
-            background_color=(0.11, 0.05, 0.2, 1),
+            background_color=(0, 0, 0, 0),
             foreground_color=(1, 1, 1, 1),
             hint_text_color=(0.6, 0.5, 0.7, 1),
             cursor_color=ACCENT_PURPLE,
-            padding=[12, 12, 12, 12]
+            padding=[12, 14, 12, 12]
         )
         self.chat_input.bind(on_text_validate=self.on_send)
         input_bar.add_widget(self.chat_input)
 
-        send_btn = Button(text="Send", size_hint=(None, 1), width=80,
+        send_btn = Button(text="Send", size_hint=(None, 1), width=70,
                            background_color=ACCENT_PURPLE, background_normal='')
         send_btn.bind(on_release=self.on_send)
         input_bar.add_widget(send_btn)
 
+        mic_btn = Button(text="\U0001F3A4", font_size='18sp', size_hint=(None, 1), width=dp(44),
+                          background_color=ACCENT_PURPLE, background_normal='')
+        mic_btn.bind(on_release=lambda inst: self.trigger_voice_listening())
+        input_bar.add_widget(mic_btn)
+
         content.add_widget(input_bar)
         outer.add_widget(content)
 
-        # ---- Sidebar ----
         self.drawer = BoxLayout(orientation='vertical', size_hint=(None, 1),
                                  width=self.DRAWER_WIDTH, x=-self.DRAWER_WIDTH,
                                  padding=18, spacing=14)
@@ -771,8 +809,7 @@ class MainScreen(Screen):
         self.drawer.bind(pos=self._sync_drawer_bg, size=self._sync_drawer_bg)
 
         drawer_header = BoxLayout(orientation='horizontal', size_hint=(1, None), height=36)
-        drawer_title = Label(text="[b]Menu[/b]", markup=True, font_size='18sp',
-                              color=(1, 1, 1, 1))
+        drawer_title = Label(text="[b]Menu[/b]", markup=True, font_size='18sp', color=(1, 1, 1, 1))
         drawer_header.add_widget(drawer_title)
         close_btn = Button(text="X", size_hint=(None, 1), width=36, font_size='16sp',
                             background_color=(0, 0, 0, 0), background_normal='', color=(1, 1, 1, 1))
@@ -878,11 +915,18 @@ class MainScreen(Screen):
         self.chat_display.text += f"\n[color=#b06bffff]System:[/color] {msg}\n"
 
     def process_command(self, text):
-        self.chat_display.text += f"\n[color=#4fd1ff]You:[/color] {text}\nप्रोसेसिंग..."
+        self.chat_display.text += f"\n[color=#4fd1ff]You:[/color] {text}\n"
+
+        app_reply = try_launch_app(text)
+        if app_reply:
+            self.chat_display.text += f"[color=#b06bffff]Jarvis:[/color] {app_reply}\n"
+            self.tts.speak(app_reply)
+            return
+
+        self.chat_display.text += "प्रोसेसिंग..."
         threading.Thread(target=self._async_process, args=(text,), daemon=True).start()
 
     def _async_process(self, text):
-        cmd = text.lower()
         reply = self.router.ask(text)
         self.db.add_note(f"User: {text} | AI: {reply}")
         Clock.schedule_once(lambda dt: self._update_reply(reply))
@@ -903,7 +947,7 @@ class MainScreen(Screen):
             self.process_command(spoken_text)
 
 
-# ---------------- Settings (password-protected) ----------------
+# ---------------- Settings ----------------
 class SettingsScreen(Screen):
     def __init__(self, on_back, main_screen_ref, **kwargs):
         super().__init__(**kwargs)
@@ -923,7 +967,6 @@ class SettingsScreen(Screen):
         self.status_lbl.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
         root.add_widget(self.status_lbl)
 
-        # Wake-word toggle
         wake_row = BoxLayout(orientation='horizontal', size_hint=(1, None), height=48)
         wake_row.add_widget(Label(text="Wake Word Detection (Jarvis)", font_name=app_font(),
                                    color=(0.85, 0.8, 0.95, 1), font_size='14sp'))
@@ -932,7 +975,6 @@ class SettingsScreen(Screen):
         wake_row.add_widget(wake_switch)
         root.add_widget(wake_row)
 
-        # TTS mute toggle
         tts_row = BoxLayout(orientation='horizontal', size_hint=(1, None), height=48)
         tts_row.add_widget(Label(text="Mute / Unmute Voice Output", font_name=app_font(),
                                   color=(0.85, 0.8, 0.95, 1), font_size='14sp'))
