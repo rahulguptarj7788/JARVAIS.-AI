@@ -1,20 +1,28 @@
 import os
-import sqlite3
 import threading
 import traceback
+from datetime import datetime
 from kivy import platform
 from kivy.app import App
+from kivy.metrics import dp
+from kivy.animation import Animation
 from kivy.uix.screenmanager import ScreenManager, Screen
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.floatlayout import FloatLayout
+from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.gridlayout import GridLayout
 from kivy.uix.label import Label
 from kivy.uix.button import Button
+from kivy.uix.togglebutton import ToggleButton
+from kivy.uix.textinput import TextInput
 from kivy.uix.scrollview import ScrollView
+from kivy.uix.image import Image
 from kivy.uix.behaviors import ButtonBehavior
+from kivy.uix.widget import Widget
 from kivy.clock import Clock
-from kivy.graphics import Color, Ellipse, Rectangle, RoundedRectangle
+from kivy.graphics import Color, Rectangle
 from kivy.core.text import LabelBase
+import sqlite3
 
 APP_PASS = "01062013"
 SETTINGS_PASS = "18112023"
@@ -25,7 +33,6 @@ _CANDIDATE_FONT_PATHS = [
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "NotoSansDevanagari-Regular.ttf"),
     "assets/NotoSansDevanagari-Regular.ttf",
     "/system/fonts/NotoSansDevanagari-Regular.ttf",
-    "/system/fonts/NotoSansDevanagariUI-Regular.ttf",
 ]
 _font_registered = False
 for _path in _CANDIDATE_FONT_PATHS:
@@ -50,20 +57,9 @@ class DatabaseManager:
 
     def create_tables(self):
         cur = self.conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS notes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                content TEXT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                synced INTEGER DEFAULT 0
-            )
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS macros (
-                action_name TEXT PRIMARY KEY,
-                json_steps TEXT
-            )
-        """)
+        cur.execute("""CREATE TABLE IF NOT EXISTS notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, synced INTEGER DEFAULT 0)""")
         self.conn.commit()
 
     def add_note(self, content):
@@ -72,32 +68,28 @@ class DatabaseManager:
         self.conn.commit()
 
 
-# ---------------- Smart AI Router (4 providers, 2 keys each, failover) ----------------
+# ---------------- Smart AI Router ----------------
 class SmartAIRouter:
     def __init__(self):
+        self.mode = "auto"  # 'auto' | 'groq' | 'gemini' | 'openrouter' | 'cerebras'
         self.providers = [
-            {
-                "name": "groq",
-                "keys": [os.environ.get("GROQ_API_KEY_1"), os.environ.get("GROQ_API_KEY_2")],
-                "call": self._call_groq,
-            },
-            {
-                "name": "gemini",
-                "keys": [os.environ.get("GEMINI_API_KEY_1"), os.environ.get("GEMINI_API_KEY_2")],
-                "call": self._call_gemini,
-            },
-            {
-                "name": "openrouter",
-                "keys": [os.environ.get("OPENROUTER_API_KEY_1"), os.environ.get("OPENROUTER_API_KEY_2")],
-                "call": self._call_openrouter,
-            },
-            {
-                "name": "cerebras",
-                "keys": [os.environ.get("CEREBRAS_API_KEY_1"), os.environ.get("CEREBRAS_API_KEY_2")],
-                "call": self._call_cerebras,
-            },
+            {"name": "groq", "keys": [os.environ.get("GROQ_API_KEY_1"), os.environ.get("GROQ_API_KEY_2")], "call": self._call_groq},
+            {"name": "gemini", "keys": [os.environ.get("GEMINI_API_KEY_1"), os.environ.get("GEMINI_API_KEY_2")], "call": self._call_gemini},
+            {"name": "openrouter", "keys": [os.environ.get("OPENROUTER_API_KEY_1"), os.environ.get("OPENROUTER_API_KEY_2")], "call": self._call_openrouter},
+            {"name": "cerebras", "keys": [os.environ.get("CEREBRAS_API_KEY_1"), os.environ.get("CEREBRAS_API_KEY_2")], "call": self._call_cerebras},
         ]
         self.key_index = {p["name"]: 0 for p in self.providers}
+
+    def set_mode(self, mode):
+        self.mode = mode
+
+    def set_manual_key(self, provider_name, key):
+        for p in self.providers:
+            if p["name"] == provider_name:
+                p["keys"].insert(0, key)
+                self.key_index[provider_name] = 0
+                return True
+        return False
 
     def _next_key(self, provider):
         keys = [k for k in provider["keys"] if k]
@@ -111,8 +103,7 @@ class SmartAIRouter:
         import requests
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-        payload = {"model": "llama-3.3-70b-versatile",
-                   "messages": [{"role": "user", "content": prompt}]}
+        payload = {"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": prompt}]}
         res = requests.post(url, json=payload, headers=headers, timeout=8)
         res.raise_for_status()
         return res.json()["choices"][0]["message"]["content"]
@@ -129,8 +120,7 @@ class SmartAIRouter:
         import requests
         url = "https://openrouter.ai/api/v1/chat/completions"
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-        payload = {"model": "deepseek/deepseek-r1",
-                   "messages": [{"role": "user", "content": prompt}]}
+        payload = {"model": "deepseek/deepseek-r1", "messages": [{"role": "user", "content": prompt}]}
         res = requests.post(url, json=payload, headers=headers, timeout=8)
         res.raise_for_status()
         return res.json()["choices"][0]["message"]["content"]
@@ -139,14 +129,16 @@ class SmartAIRouter:
         import requests
         url = "https://api.cerebras.ai/v1/chat/completions"
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-        payload = {"model": "llama-3.3-70b",
-                   "messages": [{"role": "user", "content": prompt}]}
+        payload = {"model": "llama-3.3-70b", "messages": [{"role": "user", "content": prompt}]}
         res = requests.post(url, json=payload, headers=headers, timeout=8)
         res.raise_for_status()
         return res.json()["choices"][0]["message"]["content"]
 
     def ask(self, prompt):
-        for provider in self.providers:
+        order = self.providers
+        if self.mode != "auto":
+            order = [p for p in self.providers if p["name"] == self.mode] or self.providers
+        for provider in order:
             key = self._next_key(provider)
             if not key:
                 continue
@@ -154,29 +146,29 @@ class SmartAIRouter:
                 return provider["call"](key, prompt)
             except Exception:
                 continue
-        return "ऑफ़लाइन मोड: सभी API राउट विफल रहे, लोकल इंजन एक्टिव है।"
+        return "ऑफ़लाइन मोड: सभी API राउट विफल रहे।"
 
 
-# ---------------- OneDrive integration ----------------
+# ---------------- OneDrive ----------------
 class OneDriveClient:
     def __init__(self):
         self.client_id = os.environ.get("ONEDRIVE_CLIENT_ID")
         self.client_secret = os.environ.get("ONEDRIVE_CLIENT_SECRET")
         self.refresh_token = os.environ.get("ONEDRIVE_REFRESH_TOKEN")
         self.access_token = None
+        self.last_sync_time = None
+
+    def is_configured(self):
+        return bool(self.client_id and self.client_secret and self.refresh_token)
 
     def get_access_token(self):
         import requests
-        if not (self.client_id and self.client_secret and self.refresh_token):
+        if not self.is_configured():
             return None
         url = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
-        data = {
-            "client_id": self.client_id,
-            "client_secret": self.client_secret,
-            "refresh_token": self.refresh_token,
-            "grant_type": "refresh_token",
-            "scope": "Files.ReadWrite offline_access",
-        }
+        data = {"client_id": self.client_id, "client_secret": self.client_secret,
+                "refresh_token": self.refresh_token, "grant_type": "refresh_token",
+                "scope": "Files.ReadWrite offline_access"}
         try:
             res = requests.post(url, data=data, timeout=10)
             res.raise_for_status()
@@ -195,12 +187,15 @@ class OneDriveClient:
         try:
             with open(local_path, "rb") as f:
                 res = requests.put(url, headers=headers, data=f, timeout=20)
-            return res.status_code in (200, 201)
+            if res.status_code in (200, 201):
+                self.last_sync_time = datetime.now().strftime("%d-%m-%Y %H:%M")
+                return True
+            return False
         except Exception:
             return False
 
 
-# ---------------- Media search (Pexels / Pixabay) ----------------
+# ---------------- Media search ----------------
 class MediaSearch:
     def __init__(self):
         self.pexels_key = os.environ.get("PEXELS_API_KEY")
@@ -212,8 +207,7 @@ class MediaSearch:
             return []
         headers = {"Authorization": self.pexels_key}
         try:
-            res = requests.get(f"https://api.pexels.com/v1/search?query={query}&per_page=5",
-                                headers=headers, timeout=8)
+            res = requests.get(f"https://api.pexels.com/v1/search?query={query}&per_page=5", headers=headers, timeout=8)
             res.raise_for_status()
             return [p["src"]["medium"] for p in res.json().get("photos", [])]
         except Exception:
@@ -224,21 +218,15 @@ class MediaSearch:
         if not self.pixabay_key:
             return []
         try:
-            res = requests.get(
-                f"https://pixabay.com/api/?key={self.pixabay_key}&q={query}&per_page=5",
-                timeout=8)
+            res = requests.get(f"https://pixabay.com/api/?key={self.pixabay_key}&q={query}&per_page=5", timeout=8)
             res.raise_for_status()
             return [h["webformatURL"] for h in res.json().get("hits", [])]
         except Exception:
             return []
 
 
-# ---------------- Android native TTS (no edge-tts, no pyttsx3) ----------------
+# ---------------- Android native TTS ----------------
 class AndroidTTS:
-    """
-    Uses android.speech.tts.TextToSpeech via pyjnius. Does nothing on
-    desktop (safe no-op) so the app can still be tested off-device.
-    """
     def __init__(self):
         self.engine = None
         self.ready = False
@@ -261,8 +249,7 @@ class AndroidTTS:
                     def onInit(self, status):
                         if status == 0:
                             try:
-                                hindi = Locale("hi", "IN")
-                                self.outer.engine.setLanguage(hindi)
+                                self.outer.engine.setLanguage(Locale("hi", "IN"))
                             except Exception:
                                 pass
                             self.outer.ready = True
@@ -280,10 +267,9 @@ class AndroidTTS:
                 self.engine.speak(text, TextToSpeech.QUEUE_FLUSH, None, None)
             except Exception:
                 pass
-        # desktop / not-ready: silent no-op, UI text still updates
 
 
-# ---------------- Login Screen (PIN keypad UI) ----------------
+# ---------------- Login Screen ----------------
 class LoginScreen(Screen):
     def __init__(self, expected_pass, on_success, **kwargs):
         super().__init__(**kwargs)
@@ -300,34 +286,17 @@ class LoginScreen(Screen):
             self._top_rect = Rectangle(pos=top_card.pos, size=top_card.size)
         top_card.bind(pos=self._sync_rect, size=self._sync_rect)
 
-        self.title_label = Label(
-            text="Jarvis AI\nEnter Password to Access",
-            font_name=app_font(),
-            color=(0.4, 0.1, 0.8, 1),
-            font_size='22sp',
-            size_hint=(1, 0.5),
-            halign='center'
-        )
+        self.title_label = Label(text="Jarvis AI\nEnter Password to Access", font_name=app_font(),
+                                  color=(0.4, 0.1, 0.8, 1), font_size='22sp', size_hint=(1, 0.5), halign='center')
         self.title_label.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
         top_card.add_widget(self.title_label)
 
-        self.pin_display = Label(
-            text="",
-            font_size='30sp',
-            color=(0.4, 0.1, 0.8, 1),
-            size_hint=(1, 0.3)
-        )
+        self.pin_display = Label(text="", font_size='30sp', color=(0.4, 0.1, 0.8, 1), size_hint=(1, 0.3))
         top_card.add_widget(self.pin_display)
 
-        self.login_btn = Button(
-            text="Login",
-            size_hint=(1, 0.2),
-            background_color=(0.55, 0.15, 0.9, 1),
-            font_size='18sp'
-        )
+        self.login_btn = Button(text="Login", size_hint=(1, 0.2), background_color=(0.55, 0.15, 0.9, 1), font_size='18sp')
         self.login_btn.bind(on_release=self.try_login)
         top_card.add_widget(self.login_btn)
-
         root.add_widget(top_card)
 
         keypad_wrap = BoxLayout(orientation='vertical', size_hint=(1, 0.58))
@@ -342,17 +311,11 @@ class LoginScreen(Screen):
             if k == '':
                 grid.add_widget(Label(text=''))
                 continue
-            btn = Button(
-                text=k,
-                font_size='24sp',
-                background_color=(0.65, 0.35, 0.95, 1),
-                background_normal=''
-            )
+            btn = Button(text=k, font_size='24sp', background_color=(0.65, 0.35, 0.95, 1), background_normal='')
             btn.bind(on_release=self.on_key)
             grid.add_widget(btn)
         keypad_wrap.add_widget(grid)
         root.add_widget(keypad_wrap)
-
         self.add_widget(root)
 
     def _sync_rect(self, instance, value):
@@ -379,60 +342,30 @@ class LoginScreen(Screen):
             Clock.schedule_once(lambda dt: setattr(self.pin_display, 'text', ''), 1.2)
 
 
-# ---------------- Glowing orb + quick icons ----------------
-class GlowOrbCard(ButtonBehavior, FloatLayout):
+# ---------------- Orb image button ----------------
+class OrbButton(ButtonBehavior, Image):
     def __init__(self, on_tap, **kwargs):
-        super().__init__(**kwargs)
+        super().__init__(source='assets/orb.png', allow_stretch=True, keep_ratio=True, **kwargs)
         self._on_tap = on_tap
-        with self.canvas.before:
-            Color(0.09, 0.05, 0.14, 1)
-            self._card_bg = RoundedRectangle(pos=self.pos, size=self.size, radius=[24])
-        self.bind(pos=self._sync, size=self._sync)
-
-        with self.canvas:
-            Color(0.55, 0.2, 0.95, 0.25)
-            self._glow_outer = Ellipse(pos=self.pos, size=self.size)
-            Color(0.55, 0.15, 0.95, 0.55)
-            self._glow_mid = Ellipse(pos=self.pos, size=self.size)
-            Color(0.72, 0.45, 1, 0.95)
-            self._orb = Ellipse(pos=self.pos, size=self.size)
-        self.bind(pos=self._sync_orb, size=self._sync_orb)
-
-    def _sync(self, instance, value):
-        self._card_bg.pos = instance.pos
-        self._card_bg.size = instance.size
-
-    def _sync_orb(self, instance, value):
-        cx = self.center_x
-        cy = self.center_y
-        base = min(self.width, self.height) * 0.4
-        for shape, scale in ((self._glow_outer, 1.0), (self._glow_mid, 0.75), (self._orb, 0.5)):
-            r = base * scale
-            shape.pos = (cx - r, cy - r)
-            shape.size = (r * 2, r * 2)
 
     def on_press(self):
         if self._on_tap:
             self._on_tap()
 
 
+# ---------------- Quick command icon ----------------
 class QuickIconButton(ButtonBehavior, BoxLayout):
     def __init__(self, label_text, on_tap, **kwargs):
         super().__init__(orientation='vertical', **kwargs)
         self._on_tap = on_tap
+        from kivy.graphics import RoundedRectangle
         with self.canvas.before:
             Color(0.22, 0.1, 0.35, 1)
             self._bg = RoundedRectangle(pos=self.pos, size=self.size, radius=[14])
         self.bind(pos=self._sync, size=self._sync)
 
-        lbl = Label(
-            text=label_text,
-            font_name=app_font(),
-            color=(0.85, 0.75, 1, 1),
-            font_size='13sp',
-            halign='center',
-            valign='middle'
-        )
+        lbl = Label(text=label_text, font_name=app_font(), color=(0.85, 0.75, 1, 1),
+                    font_size='13sp', halign='center', valign='middle')
         lbl.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
         self.add_widget(lbl)
 
@@ -447,6 +380,8 @@ class QuickIconButton(ButtonBehavior, BoxLayout):
 
 # ---------------- Main Screen ----------------
 class MainScreen(Screen):
+    DRAWER_WIDTH = dp(260)
+
     def __init__(self, on_settings, **kwargs):
         super().__init__(**kwargs)
         self.db = DatabaseManager()
@@ -456,18 +391,21 @@ class MainScreen(Screen):
         self.tts = AndroidTTS()
         self.silent_mode = False
         self.on_settings = on_settings
+        self.drawer_open = False
 
-        root = BoxLayout(orientation='vertical')
-        with root.canvas.before:
+        outer = FloatLayout()
+
+        # ---- Main content column ----
+        content = BoxLayout(orientation='vertical', size_hint=(1, 1))
+        with content.canvas.before:
             Color(0.04, 0.02, 0.08, 1)
-            self._bg = Rectangle(pos=root.pos, size=root.size)
-        root.bind(pos=self._sync_bg, size=self._sync_bg)
+            self._bg = Rectangle(pos=content.pos, size=content.size)
+        content.bind(pos=self._sync_bg, size=self._sync_bg)
 
-        header = BoxLayout(orientation='horizontal', size_hint=(1, None), height=60,
-                            padding=[15, 5, 15, 5])
+        header = BoxLayout(orientation='horizontal', size_hint=(1, None), height=60, padding=[15, 5, 15, 5])
         menu_btn = Button(text="=", font_size='22sp', size_hint=(None, 1), width=50,
-                           background_color=(0, 0, 0, 0), background_normal='',
-                           color=(1, 1, 1, 1))
+                           background_color=(0, 0, 0, 0), background_normal='', color=(1, 1, 1, 1))
+        menu_btn.bind(on_release=lambda inst: self.toggle_drawer())
         header.add_widget(menu_btn)
 
         title = Label(text="[b]JARVIS[/b] [color=#b06bffff]AI[/color]", markup=True,
@@ -475,78 +413,182 @@ class MainScreen(Screen):
         header.add_widget(title)
 
         settings_btn = Button(text="*", font_size='20sp', size_hint=(None, 1), width=50,
-                               background_color=(0, 0, 0, 0), background_normal='',
-                               color=(1, 1, 1, 1))
+                               background_color=(0, 0, 0, 0), background_normal='', color=(1, 1, 1, 1))
         settings_btn.bind(on_release=lambda inst: self.on_settings())
         header.add_widget(settings_btn)
-        root.add_widget(header)
+        content.add_widget(header)
 
-        subtitle = Label(
-            text="YOUR INTELLIGENT VOICE ASSISTANT",
-            font_size='12sp',
-            color=(0.6, 0.5, 0.75, 1),
-            size_hint=(1, None),
-            height=30
-        )
-        root.add_widget(subtitle)
+        subtitle = Label(text="YOUR INTELLIGENT VOICE ASSISTANT", font_size='12sp',
+                          color=(0.6, 0.5, 0.75, 1), size_hint=(1, None), height=30)
+        content.add_widget(subtitle)
 
-        orb_card = GlowOrbCard(on_tap=self.trigger_voice_listening, size_hint=(1, 0.32))
-        root.add_widget(orb_card)
+        # margin between subtitle and orb
+        content.add_widget(Widget(size_hint=(1, None), height=dp(28)))
 
-        icons_grid = GridLayout(cols=3, rows=2, size_hint=(1, 0.22),
-                                 spacing=10, padding=[15, 10, 15, 10])
+        orb_wrap = AnchorLayout(size_hint=(1, 0.34))
+        orb_btn = OrbButton(on_tap=self.trigger_voice_listening, size_hint=(None, None), size=(dp(190), dp(190)))
+        orb_wrap.add_widget(orb_btn)
+        content.add_widget(orb_wrap)
+
+        icons_grid = GridLayout(cols=5, rows=1, size_hint=(1, 0.14), spacing=8, padding=[10, 8, 10, 8])
         quick_actions = [
             ("नोट्स", "नोट लो"),
             ("अलार्म", "अलार्म सेट करो"),
             ("म्यूजिक", "गाना बजाओ"),
             ("टॉर्च", "टॉर्च ऑन करो"),
             ("वाई-फाई", "वाई-फाई टॉगल करो"),
-            ("सेटिंग्स", "सेटिंग्स खोलो"),
         ]
         for label_text, command_text in quick_actions:
-            btn = QuickIconButton(
-                label_text=label_text,
-                on_tap=lambda ct=command_text: self.process_command(ct)
-            )
+            btn = QuickIconButton(label_text=label_text, on_tap=lambda ct=command_text: self.process_command(ct))
             icons_grid.add_widget(btn)
-        root.add_widget(icons_grid)
-
-        self.status_label = Label(
-            text="Jarvis AI Ready | Multi-Routing & Accessibility Active",
-            font_name=app_font(),
-            color=(0.7, 0.3, 1, 1),
-            font_size='13sp',
-            size_hint=(1, None),
-            height=30
-        )
-        root.add_widget(self.status_label)
+        content.add_widget(icons_grid)
 
         scroll = ScrollView(size_hint=(1, 1))
-        self.chat_display = Label(
-            text="",
-            font_name=app_font(),
-            color=(1, 1, 1, 1),
-            font_size='14sp',
-            size_hint=(1, None),
-            halign='left',
-            valign='top',
-            padding=[15, 10]
-        )
+        self.chat_display = Label(text="", font_name=app_font(), color=(1, 1, 1, 1), font_size='14sp',
+                                   size_hint=(1, None), halign='left', valign='top', padding=[15, 10])
         self.chat_display.bind(
             width=lambda inst, val: setattr(inst, 'text_size', (val, None)),
             texture_size=lambda inst, val: setattr(inst, 'height', val[1])
         )
         scroll.add_widget(self.chat_display)
-        root.add_widget(scroll)
+        content.add_widget(scroll)
 
-        self.add_widget(root)
+        # ---- Bottom chat input bar (Gemini-style) ----
+        input_bar = BoxLayout(orientation='horizontal', size_hint=(1, None), height=54,
+                               padding=[10, 8, 10, 8], spacing=8)
+        with input_bar.canvas.before:
+            Color(0.12, 0.06, 0.2, 1)
+            self._input_bar_bg = Rectangle(pos=input_bar.pos, size=input_bar.size)
+        input_bar.bind(pos=self._sync_input_bar, size=self._sync_input_bar)
+
+        self.chat_input = TextInput(
+            hint_text="टाइप करें या 'set api gemini KEY' भेजें",
+            multiline=False,
+            size_hint=(1, 1),
+            background_color=(0.2, 0.1, 0.3, 1),
+            foreground_color=(1, 1, 1, 1),
+            hint_text_color=(0.6, 0.5, 0.7, 1),
+            cursor_color=(0.72, 0.45, 1, 1),
+            padding=[10, 10, 10, 10]
+        )
+        self.chat_input.bind(on_text_validate=self.on_send)
+        input_bar.add_widget(self.chat_input)
+
+        send_btn = Button(text="Send", size_hint=(None, 1), width=80,
+                           background_color=(0.55, 0.15, 0.9, 1), background_normal='')
+        send_btn.bind(on_release=self.on_send)
+        input_bar.add_widget(send_btn)
+
+        content.add_widget(input_bar)
+        outer.add_widget(content)
+
+        # ---- Side drawer (overlay, no Settings item) ----
+        self.drawer = BoxLayout(orientation='vertical', size_hint=(None, 1),
+                                 width=self.DRAWER_WIDTH, x=-self.DRAWER_WIDTH,
+                                 padding=18, spacing=16)
+        with self.drawer.canvas.before:
+            Color(0.1, 0.04, 0.18, 1)
+            self._drawer_bg = Rectangle(pos=self.drawer.pos, size=self.drawer.size)
+        self.drawer.bind(pos=self._sync_drawer_bg, size=self._sync_drawer_bg)
+
+        drawer_title = Label(text="[b]Menu[/b]", markup=True, font_size='18sp',
+                              color=(1, 1, 1, 1), size_hint=(1, None), height=30)
+        self.drawer.add_widget(drawer_title)
+
+        self.drawer.add_widget(Label(text="Model", font_size='13sp', color=(0.7, 0.6, 0.85, 1),
+                                      size_hint=(1, None), height=22, halign='left'))
+        model_row = BoxLayout(orientation='horizontal', size_hint=(1, None), height=40, spacing=6)
+        for mode_name in ["auto", "groq", "gemini"]:
+            tb = ToggleButton(text=mode_name.capitalize(), group='model_mode',
+                               state='down' if mode_name == 'auto' else 'normal',
+                               background_color=(0.4, 0.15, 0.7, 1))
+            tb.bind(on_release=lambda inst, m=mode_name: self.router.set_mode(m))
+            model_row.add_widget(tb)
+        self.drawer.add_widget(model_row)
+
+        self.onedrive_status_label = Label(
+            text="OneDrive: --", font_size='13sp', color=(0.8, 0.75, 0.9, 1),
+            size_hint=(1, None), height=50, halign='left', valign='top'
+        )
+        self.onedrive_status_label.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
+        self.drawer.add_widget(self.onedrive_status_label)
+
+        about_scroll = ScrollView(size_hint=(1, 1))
+        about_text = (
+            "About Jarvis AI\n\n"
+            "- Multi-provider AI router (Groq, Gemini, OpenRouter, Cerebras) "
+            "with auto key rotation and failover.\n"
+            "- Local SQLite note storage.\n"
+            "- OneDrive cloud sync (client credentials + refresh token).\n"
+            "- Android native TTS (Hindi) for spoken replies.\n"
+            "- Type 'set api <provider> <key>' in the chat box to override "
+            "a key for this session only."
+        )
+        about_lbl = Label(text=about_text, font_size='12sp', color=(0.65, 0.6, 0.75, 1),
+                           size_hint=(1, None), halign='left', valign='top')
+        about_lbl.bind(
+            width=lambda inst, val: setattr(inst, 'text_size', (val, None)),
+            texture_size=lambda inst, val: setattr(inst, 'height', val[1])
+        )
+        about_scroll.add_widget(about_lbl)
+        self.drawer.add_widget(about_scroll)
+
+        outer.add_widget(self.drawer)
+        self.add_widget(outer)
 
     def _sync_bg(self, instance, value):
         self._bg.pos = instance.pos
         self._bg.size = instance.size
 
+    def _sync_input_bar(self, instance, value):
+        self._input_bar_bg.pos = instance.pos
+        self._input_bar_bg.size = instance.size
+
+    def _sync_drawer_bg(self, instance, value):
+        self._drawer_bg.pos = instance.pos
+        self._drawer_bg.size = instance.size
+
+    def toggle_drawer(self):
+        target_x = 0 if not self.drawer_open else -self.DRAWER_WIDTH
+        Animation(x=target_x, d=0.25, t='out_cubic').start(self.drawer)
+        self.drawer_open = not self.drawer_open
+        if self.drawer_open:
+            self.refresh_onedrive_status()
+
+    def refresh_onedrive_status(self):
+        status = "Connected" if self.onedrive.is_configured() else "Not Configured"
+        last = self.onedrive.last_sync_time or "कभी नहीं"
+        self.onedrive_status_label.text = f"OneDrive: {status}\nLast Sync: {last}"
+
     def trigger_voice_listening(self):
         self.process_command("हेलो जार्विस, सिस्टम स्टेटस चेक करो")
+
+    def on_send(self, *args):
+        text = self.chat_input.text.strip()
+        if not text:
+            return
+        self.chat_input.text = ''
+        if text.lower().startswith('set api '):
+            self.handle_set_api(text)
+        else:
+            self.process_command(text)
+
+    def handle_set_api(self, text):
+        parts = text.split(maxsplit=3)
+        if len(parts) < 4:
+            self._append_system_msg("प्रारूप: set api <provider> <key>")
+            return
+        provider = parts[2].lower()
+        key = parts[3]
+        ok = self.router.set_manual_key(provider, key)
+        if ok:
+            self._append_system_msg(f"{provider} API key अपडेट हो गई (इस सेशन के लिए)।")
+        else:
+            self._append_system_msg(f"अज्ञात provider: {provider}")
+
+    def _append_system_msg(self, msg):
+        self.chat_display.markup = True
+        self.chat_display.text += f"\n[color=#b06bffff]System:[/color] {msg}\n"
 
     def process_command(self, text):
         self.chat_display.markup = True
@@ -572,13 +614,11 @@ class MainScreen(Screen):
             self.tts.speak(reply)
 
     def handle_assist_intent(self, spoken_text):
-        # Called from JarvisApp when the app is launched via
-        # android.intent.action.ASSIST (see AndroidManifest intent-filter).
         if spoken_text:
             self.process_command(spoken_text)
 
 
-# ---------------- Settings ----------------
+# ---------------- Settings (password-protected, from header gear icon only) ----------------
 class SettingsScreen(Screen):
     def __init__(self, on_back, **kwargs):
         super().__init__(**kwargs)
@@ -588,21 +628,14 @@ class SettingsScreen(Screen):
             self._bg = Rectangle(pos=root.pos, size=root.size)
         root.bind(pos=self._sync_bg, size=self._sync_bg)
 
-        lbl = Label(
-            text="Settings\n(macros, accessibility config coming next phase)",
-            font_name=app_font(),
-            color=(0.8, 0.7, 1, 1),
-            font_size='16sp',
-            halign='center'
-        )
+        lbl = Label(text="Settings\n(macros, accessibility config coming next phase)",
+                    font_name=app_font(), color=(0.8, 0.7, 1, 1), font_size='16sp', halign='center')
         lbl.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
         root.add_widget(lbl)
 
-        back_btn = Button(text="Back", size_hint=(1, None), height=50,
-                           background_color=(0.55, 0.15, 0.9, 1))
+        back_btn = Button(text="Back", size_hint=(1, None), height=50, background_color=(0.55, 0.15, 0.9, 1))
         back_btn.bind(on_release=lambda inst: on_back())
         root.add_widget(back_btn)
-
         self.add_widget(root)
 
     def _sync_bg(self, instance, value):
@@ -620,14 +653,8 @@ class ErrorScreen(Screen):
         root.bind(pos=self._sync_bg, size=self._sync_bg)
 
         scroll = ScrollView(size_hint=(1, 1))
-        lbl = Label(
-            text="STARTUP ERROR:\n\n" + error_text,
-            color=(1, 0.7, 0.7, 1),
-            font_size='13sp',
-            size_hint=(1, None),
-            halign='left',
-            valign='top'
-        )
+        lbl = Label(text="STARTUP ERROR:\n\n" + error_text, color=(1, 0.7, 0.7, 1),
+                    font_size='13sp', size_hint=(1, None), halign='left', valign='top')
         lbl.bind(
             width=lambda inst, val: setattr(inst, 'text_size', (val, None)),
             texture_size=lambda inst, val: setattr(inst, 'height', val[1])
@@ -669,7 +696,6 @@ class JarvisApp(App):
         return sm
 
     def _check_assist_intent(self):
-        # If launched via ASSIST intent, forward any spoken text to MainScreen.
         if platform != "android":
             return
         try:
@@ -680,9 +706,7 @@ class JarvisApp(App):
             action = intent.getAction() if intent else None
             if action == "android.intent.action.ASSIST":
                 extras = intent.getExtras()
-                spoken = None
-                if extras:
-                    spoken = extras.getString("android.intent.extra.ASSIST_CONTEXT")
+                spoken = extras.getString("android.intent.extra.ASSIST_CONTEXT") if extras else None
                 Clock.schedule_once(lambda dt: self.main_screen.handle_assist_intent(spoken or "असिस्ट खोला गया"))
         except Exception:
             pass
