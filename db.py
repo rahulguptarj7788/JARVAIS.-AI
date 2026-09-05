@@ -4,14 +4,20 @@ from datetime import datetime
 DB_PATH = "jarvis_local.db"
 
 
-class ChatDatabase:
-    """Single SQLite file, shared between the main app process and the
-    background wake-word service process (see services.py). Both open
-    their own connection to the same file -- SQLite handles this safely
-    as long as writes are short-lived (which they are here)."""
+def _configure_connection(conn):
+    """WAL mode lets the main app process and the background service
+    process read/write the same file concurrently without hitting
+    'database is locked' as often; busy_timeout makes SQLite retry
+    internally for a bit instead of failing immediately."""
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA busy_timeout=5000;")
+    return conn
 
+
+class ChatDatabase:
     def __init__(self):
         self.conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        _configure_connection(self.conn)
         self._create_tables()
 
     def _create_tables(self):
@@ -31,9 +37,12 @@ class ChatDatabase:
         self.conn.commit()
 
     def save_message(self, role, content):
-        cur = self.conn.cursor()
-        cur.execute("INSERT INTO chat_messages (role, content) VALUES (?, ?)", (role, content))
-        self.conn.commit()
+        try:
+            cur = self.conn.cursor()
+            cur.execute("INSERT INTO chat_messages (role, content) VALUES (?, ?)", (role, content))
+            self.conn.commit()
+        except sqlite3.OperationalError:
+            pass  # busy_timeout already retried internally; give up quietly
 
     def get_recent_messages(self, limit=20):
         cur = self.conn.cursor()
@@ -42,23 +51,26 @@ class ChatDatabase:
         return list(reversed(rows))
 
     def push_wake_event(self, spoken_text):
-        """Called by the background service (services.py) when it hears
-        the hotword + a follow-up utterance."""
-        conn = sqlite3.connect(DB_PATH)
-        cur = conn.cursor()
-        cur.execute("INSERT INTO wake_events (spoken_text) VALUES (?)", (spoken_text,))
-        conn.commit()
-        conn.close()
+        """Called from the separate background-service process."""
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            _configure_connection(conn)
+            conn.execute("INSERT INTO wake_events (spoken_text) VALUES (?)", (spoken_text,))
+            conn.commit()
+            conn.close()
+        except sqlite3.OperationalError:
+            pass
 
     def pop_pending_wake_event(self):
-        """Called by the main app's poll loop. Returns the oldest
-        unconsumed wake event's text, or None."""
-        cur = self.conn.cursor()
-        cur.execute("SELECT id, spoken_text FROM wake_events WHERE consumed = 0 ORDER BY id ASC LIMIT 1")
-        row = cur.fetchone()
-        if not row:
+        try:
+            cur = self.conn.cursor()
+            cur.execute("SELECT id, spoken_text FROM wake_events WHERE consumed = 0 ORDER BY id ASC LIMIT 1")
+            row = cur.fetchone()
+            if not row:
+                return None
+            event_id, text = row
+            cur.execute("UPDATE wake_events SET consumed = 1 WHERE id = ?", (event_id,))
+            self.conn.commit()
+            return text
+        except sqlite3.OperationalError:
             return None
-        event_id, text = row
-        cur.execute("UPDATE wake_events SET consumed = 1 WHERE id = ?", (event_id,))
-        self.conn.commit()
-        return text 
