@@ -1,19 +1,14 @@
 """
-Runs as a separate Android foreground service process (python-for-android
-service model). Shows a persistent notification so the OS is less likely
-to kill it, and loops SpeechRecognizer listening for "jarvis"/"hey jarvis".
-On detection, it records the following utterance and writes it into the
-shared SQLite db (wake_events table) for the main app to pick up.
+Background foreground-service entry point (separate process from the
+main app, started via android.services in buildozer.spec).
 
-IMPORTANT LIMITS (be aware of these on a MIUI/Redmi device):
-- Android 10+ restricts background microphone access; this only reliably
-  works while the service holds a genuine foreground-service notification
-  (handled below) AND the user has disabled MIUI's battery/autostart
-  restriction for this app.
-- This is best-effort 24/7, not a guarantee -- no app can fully prevent
-  an aggressive OEM battery manager from killing it.
+Event-driven loop: SpeechRecognizer's callbacks (onResults/onError) are
+delivered on this process's main Looper thread. The old version called
+time.sleep(4) right after startListening(), which BLOCKED that same
+Looper thread -- meaning recognition callbacks could not be delivered
+while asleep. Fixed by only restarting listening from inside the
+callbacks themselves (event-driven), never via a blocking sleep loop.
 """
-import time
 from jnius import autoclass, PythonJavaClass, java_method
 
 PythonService = autoclass('org.kivy.android.PythonService')
@@ -25,9 +20,19 @@ Build_VERSION = autoclass('android.os.Build$VERSION')
 SpeechRecognizer = autoclass('android.speech.SpeechRecognizer')
 RecognizerIntent = autoclass('android.speech.RecognizerIntent')
 Intent = autoclass('android.content.Intent')
+Handler = autoclass('android.os.Handler')
+Looper = autoclass('android.os.Looper')
 
 service = PythonService.mService
 CHANNEL_ID = "jarvis_wakeword_channel"
+
+RESTART_DELAY_MS = 800          # normal restart after a finished session
+BUSY_RETRY_DELAY_MS = 2000      # longer backoff specifically for ERROR_RECOGNIZER_BUSY
+ERROR_RECOGNIZER_BUSY = 8       # SpeechRecognizer.ERROR_RECOGNIZER_BUSY constant value
+
+_handler = Handler(Looper.getMainLooper())
+_recognizer = None
+_recognizer_intent = None
 
 
 def _ensure_notification():
@@ -54,6 +59,17 @@ def _push_wake_event(text):
     db.push_wake_event(text)
 
 
+def _start_listening():
+    try:
+        _recognizer.startListening(_recognizer_intent)
+    except Exception:
+        _schedule_restart(RESTART_DELAY_MS)
+
+
+def _schedule_restart(delay_ms):
+    _handler.postDelayed(_start_listening, delay_ms)
+
+
 class RecognitionListener(PythonJavaClass):
     __javainterfaces__ = ["android/speech/RecognitionListener"]
     __javacontext__ = "app"
@@ -68,10 +84,14 @@ class RecognitionListener(PythonJavaClass):
                     _push_wake_event(text)
         except Exception:
             pass
+        _schedule_restart(RESTART_DELAY_MS)
 
     @java_method("(I)V")
     def onError(self, error):
-        pass
+        # ERROR_RECOGNIZER_BUSY needs a longer backoff or we just hammer
+        # the recognizer with restarts and it stays busy indefinitely.
+        delay = BUSY_RETRY_DELAY_MS if error == ERROR_RECOGNIZER_BUSY else RESTART_DELAY_MS
+        _schedule_restart(delay)
 
     @java_method("(Landroid/os/Bundle;)V")
     def onReadyForSpeech(self, params):
@@ -102,22 +122,19 @@ class RecognitionListener(PythonJavaClass):
         pass
 
 
-def main_loop():
+def main():
+    global _recognizer, _recognizer_intent
     _ensure_notification()
+
     listener = RecognitionListener()
-    recognizer = SpeechRecognizer.createSpeechRecognizer(service)
-    recognizer.setRecognitionListener(listener)
+    _recognizer = SpeechRecognizer.createSpeechRecognizer(service)
+    _recognizer.setRecognitionListener(listener)
 
-    intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
-    intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-    intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "hi-IN")
+    _recognizer_intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+    _recognizer_intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+    _recognizer_intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "hi-IN")
 
-    while True:
-        try:
-            recognizer.startListening(intent)
-        except Exception:
-            pass
-        time.sleep(4)
+    _start_listening()
 
 
-main_loop()
+main()
