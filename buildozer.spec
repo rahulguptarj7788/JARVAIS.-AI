@@ -6,13 +6,12 @@ source.dir = .
 source.include_exts = py,png,jpg,ttf,kv,atlas,xml,json,java
 source.include_patterns = assets/*,*.xml
 version = 1.0.0
-requirements = hostpython3==3.11.6,python3==3.11.6,kivy,requests,urllib3,certifi,pyjnius
+requirements = hostpython3==3.11.6,python3==3.11.6,kivy,requests,urllib3,certifi,pyjnius,android
 orientation = portrait
 fullscreen = 0
 icon.filename = %(source.dir)s/assets/icon.png
 presplash.filename = %(source.dir)s/assets/presplash.png
-android.permissions = INTERNET, RECORD_AUDIO, FOREGROUND_SERVICE, FOREGROUND_SERVICE_MICROPHONE, SYSTEM_ALERT_WINDOW, POST_NOTIFICATIONS, ACCESS_NETWORK_STATE, ACCESS_WIFI_STATE, CAMERA
-android.services = Jarviswakeword:services.py
+android.permissions = RECORD_AUDIO, FOREGROUND_SERVICE, FOREGROUND_SERVICE_MICROPHONE, SYSTEM_ALERT_WINDOW, POST_NOTIFICATIONS, ACCESS_NETWORK_STATE, ACCESS_WIFI_STATE, CAMERA
 android.api = 33
 android.build_tools = 33.0.2
 android.minapi = 24
@@ -21,7 +20,7 @@ android.sdk_path = /usr/local/lib/android/sdk
 android.ndk_path = /usr/local/lib/android/sdk/ndk/25.2.9519653
 android.private_storage = True
 android.androidx = True
-android.manifest.intent_filters = assets/extra_intent_filters.xml
+android.services = Jarviswakeword:services.py:foreground
 
 [buildozer]
 log_level = 2
