@@ -8,17 +8,12 @@ def _get_activity():
 
 
 def go_to_home_screen():
-    """Minimizes the app by launching the Android home screen intent.
-    Uses FLAG_ACTIVITY_NEW_TASK so it does not throw a
-    'calling startActivity() from outside an Activity' security
-    exception when triggered from a background thread callback."""
     if platform != "android":
         return False, "Desktop mode: होम स्क्रीन इंटेंट सिर्फ़ Android पर काम करता है।"
     try:
         from jnius import autoclass
         Intent = autoclass("android.content.Intent")
         activity = _get_activity()
-
         intent = Intent(Intent.ACTION_MAIN)
         intent.addCategory(Intent.CATEGORY_HOME)
         intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -46,23 +41,12 @@ def toggle_torch(turn_on):
 
 
 def capture_and_push_screenshot():
-    """Best-effort: captures only this app's own window (Kivy's
-    Window.screenshot). A true full-device screenshot requires
-    Android's MediaProjection API, which shows a one-time system
-    consent dialog and is out of scope here."""
     try:
         from kivy.core.window import Window
-        import tempfile
-        import os
+        import tempfile, os
         path = os.path.join(tempfile.gettempdir(), "jarvis_shot.png")
         Window.screenshot(name=path)
-
-        try:
-            import hardware_cloud_stub  # optional, no-op if absent
-        except Exception:
-            pass
-
-        return True, "स्क्रीनशॉट ले लिया (सिर्फ़ ऐप विंडो का) और क्लाउड पर भेजने की कोशिश की।"
+        return True, "स्क्रीनशॉट ले लिया (सिर्फ़ ऐप विंडो का)।"
     except Exception as e:
         return False, f"स्क्रीनशॉट त्रुटि: {str(e)}"
 
@@ -75,22 +59,23 @@ def open_cast_intent():
         Settings = autoclass("android.provider.Settings")
         Intent = autoclass("android.content.Intent")
         activity = _get_activity()
-        intent = Intent(Settings.ACTION_CAST_SETTINGS)
-        activity.startActivity(intent)
+        activity.startActivity(Intent(Settings.ACTION_CAST_SETTINGS))
         return True, "कास्ट सेटिंग्स खोल रहा हूँ।"
     except Exception as e:
-        return False, f"कास्ट खोलने में समस्या (यह डिवाइस सपोर्ट नहीं कर सकता): {str(e)}"
+        return False, f"कास्ट खोलने में समस्या: {str(e)}"
 
 
-def vision_screen_lock_test():
-    # Stub: real implementation would need CameraX + a vision model call.
-    return True, "Vision स्क्रीन-लॉक टेस्ट अभी placeholder है -- अगली फेज़ में जोड़ा जाएगा।"
-
-
-def push_note_to_cloud(text):
-    # Placeholder hook -- wire this to your OneDrive/Graph API upload
-    # call once you're ready; kept separate so main.py stays disk-free.
-    pass
+def play_activation_chime():
+    if platform != "android":
+        return
+    try:
+        from jnius import autoclass
+        ToneGenerator = autoclass("android.media.ToneGenerator")
+        AudioManager = autoclass("android.media.AudioManager")
+        tg = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 80)
+        tg.startTone(ToneGenerator.TONE_PROP_BEEP, 150)
+    except Exception:
+        pass
 
 
 def speak_tts(text):
@@ -102,10 +87,27 @@ def speak_tts(text):
         activity = _get_activity()
         if not hasattr(speak_tts, "_engine"):
             speak_tts._engine = TextToSpeech(activity, None)
-            speak_tts._ready = True
         speak_tts._engine.speak(text, TextToSpeech.QUEUE_FLUSH, None, None)
     except Exception:
         pass
+
+
+def set_wakeword_service_running(should_run):
+    if platform != "android":
+        return False, "Desktop mode: background service सिर्फ़ Android पर चलती है।"
+    try:
+        from jnius import autoclass
+        SERVICE_NAME = "com.jarvis.assistant.ServiceJarviswakeword"
+        if should_run:
+            service = autoclass(SERVICE_NAME)
+            service.start(_get_activity(), '')
+            return True, "24/7 wake-word service शुरू की गई (persistent notification देखें)।"
+        else:
+            service = autoclass(SERVICE_NAME)
+            service.stop(_get_activity())
+            return True, "Wake-word service बंद कर दी गई।"
+    except Exception as e:
+        return False, f"Service त्रुटि: {str(e)}"
 
 
 def open_voice_assistant_settings():
@@ -128,15 +130,10 @@ def _open_settings_action(action, use_package_uri):
         Intent = autoclass("android.content.Intent")
         Settings = autoclass("android.provider.Settings")
         activity = _get_activity()
-
-        action_value = getattr(Settings, action)
-        intent = Intent(action_value)
-
+        intent = Intent(getattr(Settings, action))
         if use_package_uri:
             Uri = autoclass("android.net.Uri")
-            uri = Uri.fromParts("package", "com.jarvis.assistant", None)
-            intent.setData(uri)
-
+            intent.setData(Uri.fromParts("package", "com.jarvis.assistant", None))
         activity.startActivity(intent)
         return True, "खोला जा रहा है..."
     except Exception as e:
