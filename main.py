@@ -1,8 +1,9 @@
+import os
 import threading
+import time
 from datetime import datetime
 from kivy import platform
 from kivy.app import App
-from kivy.lang import Builder
 from kivy.metrics import dp
 from kivy.core.window import Window
 from kivy.animation import Animation
@@ -24,13 +25,12 @@ from kivy.clock import Clock
 from kivy.graphics import Color, Rectangle, RoundedRectangle
 from kivy.core.text import LabelBase
 import traceback
-import os
 
-from router import SmartAIRouter, strip_think_tags
+from router import SmartAIRouter
+from db import ChatDatabase
 import hardware_controller as hw
 
 Window.softinput_mode = 'below_target'
-Builder.load_file('ui_layout.kv')
 
 APP_PASS = "01062013"
 SETTINGS_PASS = "18112023"
@@ -57,26 +57,7 @@ for _path in _CANDIDATE_FONT_PATHS:
 
 
 def hindi_font():
-    """Use for any widget that will render Hindi/Devanagari text.
-    Roboto (set globally via ui_layout.kv) does not have Devanagari
-    glyphs, so those specific widgets must override it explicitly."""
     return DEVANAGARI_FONT_NAME if _font_registered else "Roboto"
-
-
-# ---------------- Volatile RAM-only session store (no disk writes) ----------------
-class SessionMemory:
-    """Zero-disk-storage: everything lives only in this process's RAM and
-    is lost when the app is killed. Notes are pushed straight to OneDrive
-    instead of being written to a local file/DB."""
-    def __init__(self):
-        self.notes = []          # list of {"text":..., "time":...}
-        self.chat_history = []   # list of {"role":..., "content":...}
-
-    def add_note(self, content):
-        self.notes.append({"text": content, "time": datetime.now().isoformat()})
-
-    def add_turn(self, role, content):
-        self.chat_history.append({"role": role, "content": content})
 
 
 # ---------------- Login Screen ----------------
@@ -152,7 +133,6 @@ class LoginScreen(Screen):
             Clock.schedule_once(lambda dt: setattr(self.pin_display, 'text', ''), 1.2)
 
 
-# ---------------- Orb image button ----------------
 class OrbButton(ButtonBehavior, Image):
     def __init__(self, on_tap, **kwargs):
         super().__init__(source='assets/orb.png', allow_stretch=True, keep_ratio=True, **kwargs)
@@ -163,25 +143,19 @@ class OrbButton(ButtonBehavior, Image):
             self._on_tap()
 
 
-# ---------------- 48dp min touch-target icon button (Settings gear) ----------------
 class TouchTargetIconButton(ButtonBehavior, AnchorLayout):
-    """Outer clickable area is forced to >= 48dp x 48dp (Android's
-    minimum recommended touch target), even though the visible icon
-    inside can stay small."""
     def __init__(self, icon_text, on_tap, icon_color=(1, 1, 1, 1), **kwargs):
         kwargs.setdefault('size_hint', (None, None))
         kwargs.setdefault('size', (dp(48), dp(48)))
         super().__init__(**kwargs)
         self._on_tap = on_tap
-        self.icon_lbl = Label(text=icon_text, font_size='20sp', color=icon_color)
-        self.add_widget(self.icon_lbl)
+        self.add_widget(Label(text=icon_text, font_size='20sp', color=icon_color))
 
     def on_press(self):
         if self._on_tap:
             self._on_tap()
 
 
-# ---------------- Quick command icon ----------------
 class QuickIconButton(ButtonBehavior, BoxLayout):
     def __init__(self, label_text, on_tap, **kwargs):
         super().__init__(orientation='vertical', **kwargs)
@@ -205,24 +179,18 @@ class QuickIconButton(ButtonBehavior, BoxLayout):
             self._on_tap()
 
 
-HOME_COMMAND_PHRASES = [
-    "go to home screen", "minimize apps", "apps close karo",
-    "होम स्क्रीन", "मिनिमाइज़",
-]
-
-
-# ---------------- Main Screen ----------------
 class MainScreen(Screen):
     DRAWER_WIDTH = dp(260)
+    WAKE_POLL_INTERVAL = 1.5  # seconds, checks db for hotword events from the service
 
     def __init__(self, on_settings, **kwargs):
         super().__init__(**kwargs)
-        self.memory = SessionMemory()
+        self.db = ChatDatabase()
         self.router = SmartAIRouter()
         self.on_settings = on_settings
         self.drawer_open = False
-        self.wake_word_active = False
         self.tts_muted = False
+        self._wake_poll_ev = None
 
         outer = FloatLayout()
 
@@ -240,8 +208,7 @@ class MainScreen(Screen):
                       font_size='24sp', color=(1, 1, 1, 1))
         header.add_widget(title)
 
-        settings_btn = TouchTargetIconButton(icon_text="\u2699", on_tap=self.on_settings,
-                                              icon_color=ACCENT_PURPLE)
+        settings_btn = TouchTargetIconButton(icon_text="\u2699", on_tap=self.on_settings, icon_color=ACCENT_PURPLE)
         header.add_widget(settings_btn)
         content.add_widget(header)
 
@@ -289,15 +256,10 @@ class MainScreen(Screen):
         input_bar.bind(pos=self._sync_input_bar, size=self._sync_input_bar)
 
         self.chat_input = TextInput(
-            hint_text="टाइप करें...",
-            multiline=False,
-            size_hint=(1, 1),
-            background_color=(0, 0, 0, 0),
-            foreground_color=(1, 1, 1, 1),
-            hint_text_color=(0.6, 0.5, 0.7, 1),
-            cursor_color=ACCENT_PURPLE,
-            padding=[12, 14, 12, 12],
-            font_name=hindi_font(),
+            hint_text="टाइप करें...", multiline=False, size_hint=(1, 1),
+            background_color=(0, 0, 0, 0), foreground_color=(1, 1, 1, 1),
+            hint_text_color=(0.6, 0.5, 0.7, 1), cursor_color=ACCENT_PURPLE,
+            padding=[12, 14, 12, 12], font_name=hindi_font(),
         )
         self.chat_input.bind(on_text_validate=self.on_send)
         input_bar.add_widget(self.chat_input)
@@ -316,8 +278,7 @@ class MainScreen(Screen):
         outer.add_widget(content)
 
         self.drawer = BoxLayout(orientation='vertical', size_hint=(None, 1),
-                                 width=self.DRAWER_WIDTH, x=-self.DRAWER_WIDTH,
-                                 padding=18, spacing=14)
+                                 width=self.DRAWER_WIDTH, x=-self.DRAWER_WIDTH, padding=18, spacing=14)
         with self.drawer.canvas.before:
             Color(*BG_PANEL)
             self._drawer_bg = Rectangle(pos=self.drawer.pos, size=self.drawer.size)
@@ -331,8 +292,8 @@ class MainScreen(Screen):
 
         self.drawer.add_widget(Label(text="Model", font_size='13sp', color=(0.7, 0.6, 0.85, 1),
                                       size_hint=(1, None), height=22, halign='left'))
-        model_col = BoxLayout(orientation='vertical', size_hint=(1, None), height=220, spacing=6)
-        for mode_name in ["auto", "gemini", "groq", "openrouter"]:
+        model_col = BoxLayout(orientation='vertical', size_hint=(1, None), height=180, spacing=6)
+        for mode_name in ["auto", "gemini", "openrouter", "groq"]:
             tb = ToggleButton(text=mode_name.capitalize(), group='model_mode',
                                state='down' if mode_name == 'auto' else 'normal',
                                background_color=ACCENT_PURPLE, size_hint=(1, None), height=38)
@@ -343,6 +304,23 @@ class MainScreen(Screen):
         self.drawer.add_widget(Widget(size_hint=(1, 1)))
         outer.add_widget(self.drawer)
         self.add_widget(outer)
+
+    def on_enter(self):
+        # Load prior conversation from SQLite for continuity
+        history = self.db.get_recent_messages(limit=20)
+        for role, content in history:
+            color = "#4fd1ff" if role == "user" else "#b06bffff"
+            label = "You" if role == "user" else "Jarvis"
+            self.chat_display.text += f"\n[color={color}]{label}:[/color] {content}\n"
+
+        # Poll for hotword events written by the background service (see services.py)
+        self._wake_poll_ev = Clock.schedule_interval(self._poll_wake_events, self.WAKE_POLL_INTERVAL)
+
+    def _poll_wake_events(self, dt):
+        event_text = self.db.pop_pending_wake_event()
+        if event_text:
+            hw.play_activation_chime()
+            self.process_command(event_text)
 
     def _sync_bg(self, instance, value):
         self._bg.pos = instance.pos
@@ -366,6 +344,7 @@ class MainScreen(Screen):
         self.drawer_open = not self.drawer_open
 
     def trigger_voice_listening(self):
+        hw.play_activation_chime()
         self.process_command("हेलो जार्विस, सिस्टम स्टेटस चेक करो")
 
     def on_send(self, *args):
@@ -375,87 +354,57 @@ class MainScreen(Screen):
         self.chat_input.text = ''
         self.process_command(text)
 
-    def _append_system_msg(self, msg):
-        self.chat_display.text += f"\n[color=#b06bffff]System:[/color] {msg}\n"
-
     def _speak(self, text):
         if not self.tts_muted:
             hw.speak_tts(text)
 
     def process_command(self, text):
         self.chat_display.text += f"\n[color=#4fd1ff]You:[/color] {text}\n"
-        self.memory.add_turn("user", text)
+        self.db.save_message("user", text)
 
         lower = text.lower()
-
-        # Home-screen minimize command (handled locally, no AI call)
-        if any(phrase in lower for phrase in HOME_COMMAND_PHRASES):
+        if any(p in lower for p in ["go to home screen", "minimize apps", "apps close karo", "होम स्क्रीन"]):
             ok, msg = hw.go_to_home_screen()
-            self.chat_display.text += f"[color=#b06bffff]Jarvis:[/color] {msg}\n"
-            self._speak(msg)
+            self._reply_direct(msg)
             return
-
-        # Torch
-        if "टॉर्च" in lower or "torch" in lower or "flashlight" in lower:
-            state_on = "बंद" not in lower and "off" not in lower
-            ok, msg = hw.toggle_torch(state_on)
-            self.chat_display.text += f"[color=#b06bffff]Jarvis:[/color] {msg}\n"
-            self._speak(msg)
+        if "टॉर्च" in lower or "torch" in lower:
+            ok, msg = hw.toggle_torch("बंद" not in lower and "off" not in lower)
+            self._reply_direct(msg)
             return
-
-        # Screenshot (best-effort: captures this app's own window only --
-        # true full-screen capture needs Android's MediaProjection consent
-        # dialog, which is out of scope here)
         if "स्क्रीनशॉट" in lower or "screenshot" in lower:
             ok, msg = hw.capture_and_push_screenshot()
-            self.chat_display.text += f"[color=#b06bffff]Jarvis:[/color] {msg}\n"
-            self._speak(msg)
+            self._reply_direct(msg)
             return
-
-        # TV cast (stub -- opens Android's built-in Cast/output switcher)
         if "टीवी" in lower or "cast" in lower:
             ok, msg = hw.open_cast_intent()
-            self.chat_display.text += f"[color=#b06bffff]Jarvis:[/color] {msg}\n"
-            self._speak(msg)
+            self._reply_direct(msg)
             return
-
-        # Vision API screen-lock test (stub)
-        if "screen lock test" in lower or "स्क्रीन लॉक टेस्ट" in lower:
-            ok, msg = hw.vision_screen_lock_test()
-            self.chat_display.text += f"[color=#b06bffff]Jarvis:[/color] {msg}\n"
-            self._speak(msg)
-            return
-
         if lower.startswith('set api '):
             self.handle_set_api(text)
-            return
-
-        if "नोट लो" in lower or "note" in lower:
-            self.memory.add_note(text)
-            hw.push_note_to_cloud(text)
-            self.chat_display.text += "[color=#b06bffff]Jarvis:[/color] नोट क्लाउड पर भेज दिया गया।\n"
-            self._speak("नोट क्लाउड पर भेज दिया गया।")
             return
 
         self.chat_display.text += "प्रोसेसिंग..."
         threading.Thread(target=self._async_process, args=(text,), daemon=True).start()
 
+    def _reply_direct(self, msg):
+        self.chat_display.text += f"[color=#b06bffff]Jarvis:[/color] {msg}\n"
+        self.db.save_message("assistant", msg)
+        self._speak(msg)
+
     def handle_set_api(self, text):
         parts = text.split(maxsplit=3)
         if len(parts) < 4:
-            self._append_system_msg("प्रारूप: set api <provider> <key>")
+            self.chat_display.text += "\n[color=#b06bffff]System:[/color] प्रारूप: set api <provider> <key>\n"
             return
-        provider = parts[2].lower()
-        key = parts[3]
+        provider, key = parts[2].lower(), parts[3]
         ok = self.router.set_manual_key(provider, key)
-        if ok:
-            self._append_system_msg(f"{provider} API key इस सेशन के लिए सेट हो गई (RAM only, restart पर मिट जाएगी)।")
-        else:
-            self._append_system_msg(f"अज्ञात provider: {provider}")
+        msg = f"{provider} API key सेट हो गई (इस सेशन के लिए)।" if ok else f"अज्ञात provider: {provider}"
+        self.chat_display.text += f"\n[color=#b06bffff]System:[/color] {msg}\n"
 
     def _async_process(self, text):
-        reply, fail_count = self.router.ask(text)
-        self.memory.add_turn("assistant", reply)
+        # Build short context from recent SQLite history for continuity
+        context = self.db.get_recent_messages(limit=6)
+        reply, fail_count = self.router.ask(text, context=context)
         Clock.schedule_once(lambda dt: self._update_reply(reply, fail_count))
 
     def _update_reply(self, reply, fail_count):
@@ -463,24 +412,23 @@ class MainScreen(Screen):
             self.chat_display.text = self.chat_display.text[:-len("प्रोसेसिंग...")]
 
         if reply is None:
-            msg = "सभी API Keys विफल रही।"
+            msg = "सभी API providers विफल रहे।"
             self.chat_display.text += f"\n[color=#ff5c5c]Jarvis:[/color] {msg}\n"
+            self.db.save_message("assistant", msg)
             self._speak(msg)
             return
 
         self.chat_display.text += f"\n[color=#b06bffff]Jarvis:[/color] {reply}\n"
+        self.db.save_message("assistant", reply)
         self._speak(reply)
-
         if fail_count > 0:
-            # Silent footer log -- shown in UI, never spoken
-            self.chat_display.text += f"[color=#888888][size=11]{{Logs: {fail_count}/6 Keys Failed}}[/size][/color]\n"
+            self.chat_display.text += f"[color=#888888][size=11]{{Logs: {fail_count} provider(s) failed before success}}[/size][/color]\n"
 
     def handle_assist_intent(self, spoken_text):
         if spoken_text:
             self.process_command(spoken_text)
 
 
-# ---------------- Settings ----------------
 class SettingsScreen(Screen):
     def __init__(self, on_back, main_screen_ref, **kwargs):
         super().__init__(**kwargs)
@@ -491,9 +439,8 @@ class SettingsScreen(Screen):
             self._bg = Rectangle(pos=root.pos, size=root.size)
         root.bind(pos=self._sync_bg, size=self._sync_bg)
 
-        title_lbl = Label(text="Settings", font_name=hindi_font(), color=(0.8, 0.7, 1, 1),
-                           font_size='20sp', size_hint=(1, None), height=40)
-        root.add_widget(title_lbl)
+        root.add_widget(Label(text="Settings", font_name=hindi_font(), color=(0.8, 0.7, 1, 1),
+                               font_size='20sp', size_hint=(1, None), height=40))
 
         self.status_lbl = Label(text="", font_size='13sp', color=(0.7, 0.9, 0.7, 1),
                                  size_hint=(1, None), height=40, halign='center')
@@ -501,10 +448,10 @@ class SettingsScreen(Screen):
         root.add_widget(self.status_lbl)
 
         wake_row = BoxLayout(orientation='horizontal', size_hint=(1, None), height=48)
-        wake_row.add_widget(Label(text="Wake Word Detection (Jarvis)", font_name=hindi_font(),
+        wake_row.add_widget(Label(text="24/7 Wake-Word Service (Jarvis)", font_name=hindi_font(),
                                    color=(0.85, 0.8, 0.95, 1), font_size='14sp'))
         wake_switch = Switch(active=False)
-        wake_switch.bind(active=lambda inst, val: setattr(self.main_screen_ref, 'wake_word_active', val))
+        wake_switch.bind(active=self._on_wake_toggle)
         wake_row.add_widget(wake_switch)
         root.add_widget(wake_row)
 
@@ -516,27 +463,25 @@ class SettingsScreen(Screen):
         tts_row.add_widget(tts_switch)
         root.add_widget(tts_row)
 
-        voice_btn = Button(text="Set Default Voice Assistant", size_hint=(1, None), height=55,
-                            background_color=ACCENT_PURPLE)
-        voice_btn.bind(on_release=lambda inst: self._run_intent(hw.open_voice_assistant_settings))
-        root.add_widget(voice_btn)
-
-        accessibility_btn = Button(text="Enable Accessibility Service", size_hint=(1, None), height=55,
-                                    background_color=ACCENT_PURPLE)
-        accessibility_btn.bind(on_release=lambda inst: self._run_intent(hw.open_accessibility_settings))
-        root.add_widget(accessibility_btn)
-
-        perms_btn = Button(text="App Permissions", size_hint=(1, None), height=55,
-                            background_color=ACCENT_PURPLE)
-        perms_btn.bind(on_release=lambda inst: self._run_intent(hw.open_app_permission_settings))
-        root.add_widget(perms_btn)
+        for label, fn in [
+            ("Set Default Voice Assistant", hw.open_voice_assistant_settings),
+            ("Enable Accessibility Service", hw.open_accessibility_settings),
+            ("App Permissions", hw.open_app_permission_settings),
+        ]:
+            btn = Button(text=label, size_hint=(1, None), height=55, background_color=ACCENT_PURPLE)
+            btn.bind(on_release=lambda inst, f=fn: self._run_intent(f))
+            root.add_widget(btn)
 
         root.add_widget(Widget(size_hint=(1, 1)))
-
         back_btn = Button(text="Back", size_hint=(1, None), height=50, background_color=BG_PANEL)
         back_btn.bind(on_release=lambda inst: on_back())
         root.add_widget(back_btn)
         self.add_widget(root)
+
+    def _on_wake_toggle(self, instance, value):
+        ok, msg = hw.set_wakeword_service_running(value)
+        self.status_lbl.color = (0.7, 0.9, 0.7, 1) if ok else (1, 0.5, 0.5, 1)
+        self.status_lbl.text = msg
 
     def _run_intent(self, fn):
         ok, msg = fn()
@@ -587,9 +532,8 @@ class JarvisApp(App):
             sm.add_widget(settings_lock)
             sm.add_widget(settings_screen)
         except Exception:
-            err_text = traceback.format_exc()
             sm.clear_widgets()
-            sm.add_widget(ErrorScreen(err_text, name='error'))
+            sm.add_widget(ErrorScreen(traceback.format_exc(), name='error'))
 
         self.sm = sm
         self._check_assist_intent()
