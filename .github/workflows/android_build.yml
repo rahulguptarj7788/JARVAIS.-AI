@@ -79,10 +79,10 @@ jobs:
           PYTHONPATH: ""
           ANDROID_HOME: /usr/local/lib/android/sdk
           ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-          GEMINI_KEY_1: ${{ secrets.GEMINI_API_KEY_1 }}
-          GEMINI_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
-          GROQ_KEY_1: ${{ secrets.GROQ_API_KEY_1 }}
-          GROQ_KEY_2: ${{ secrets.GROQ_API_KEY_2 }}
+          GEMINI_API_KEY_1: ${{ secrets.GEMINI_API_KEY_1 }}
+          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
+          GROQ_API_KEY_1: ${{ secrets.GROQ_API_KEY_1 }}
+          GROQ_API_KEY_2: ${{ secrets.GROQ_API_KEY_2 }}
           ONEDRIVE_CLIENT_ID: ${{ secrets.ONEDRIVE_CLIENT_ID }}
           ONEDRIVE_CLIENT_SECRET: ${{ secrets.ONEDRIVE_CLIENT_SECRET }}
           ONEDRIVE_REFRESH_TOKEN: ${{ secrets.ONEDRIVE_REFRESH_TOKEN }}
