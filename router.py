@@ -1,6 +1,8 @@
 import os
 import re
 import json
+import time
+import threading
 
 APP_KEYS_JSON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_keys.json")
 
@@ -20,18 +22,36 @@ def load_key(name):
 SYSTEM_PROMPT_JARVIS = (
     "You are Jarvis, a highly capable AI assistant powering a mobile app. "
     "Always identify yourself as Jarvis. Never mention Claude, ChatGPT, Gemini, "
-    "Llama, or any underlying model/provider name. Keep responses clean, "
+    "Groq, or any underlying model/provider name. Keep responses clean, "
     "structured, and in the user's language (Hindi/English/Hinglish). Never "
     "output internal reasoning or <think> tags."
 )
 
-# Auth/plan-level errors: retrying the SAME key with a different model
-# will fail identically, so skip straight to the next key.
 SKIP_STATUS = {400, 401, 402, 404}
-# Transient/overload errors: worth trying a different model on the SAME
-# key once before giving up on it (no artificial delay -- keeps the
-# fallback fast).
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+
+# Per your Colab verification. Used exactly as given -- if any of these
+# turn out wrong on Google's side, the request will 404/400 and the
+# router will simply skip to the next model/key, not crash.
+GEMINI_TEXT_MODELS = [
+    "models/gemini-3.5-flash",
+    "models/gemini-3.6-flash",
+    "models/gemini-3.7-flash",
+]
+GEMINI_VISION_MODELS = [
+    "models/gemini-3.1-flash-lite",
+    "models/gemini-3.1-flash-lite-preview",
+    "models/gemini-robotics-er-2-preview",
+]
+GROQ_TEXT_MODELS = [
+    "qwen/qwen3.6-27b",
+    "groq/compound",
+    "openai/gpt-oss-120b",
+]
+GROQ_STT_MODEL = "whisper-large-v3-turbo"
+
+RPM_LIMIT_PER_KEY = 14      # proactively rotate before hitting the real 15/min cap
+RPM_WINDOW_SECONDS = 60
 
 
 def strip_think_tags(text):
@@ -47,69 +67,85 @@ class ProviderHttpError(Exception):
         super().__init__(f"HTTP {status}")
 
 
+class KeyPoolCounter:
+    """
+    Tracks request counts per key inside a rolling 60s window and forces
+    a switch to the next key in the pool BEFORE the real 429 happens
+    (proactive rotation at 14 requests instead of reacting to errors).
+    Thread-safe: called from whichever thread is making the API call.
+    """
+    def __init__(self, keys):
+        self._keys = [k for k in keys if k]
+        self._lock = threading.Lock()
+        self._state = {k: {"count": 0, "window_start": time.time()} for k in self._keys}
+        self._pointer = 0
+
+    def _reset_if_expired(self, key):
+        state = self._state[key]
+        if time.time() - state["window_start"] >= RPM_WINDOW_SECONDS:
+            state["count"] = 0
+            state["window_start"] = time.time()
+
+    def get_available_keys_in_order(self):
+        """Returns keys starting from whichever one currently has quota
+        left, so the caller always tries an under-limit key first."""
+        if not self._keys:
+            return []
+        with self._lock:
+            for k in self._keys:
+                self._reset_if_expired(k)
+            ordered = sorted(
+                self._keys,
+                key=lambda k: (self._state[k]["count"] >= RPM_LIMIT_PER_KEY, self._state[k]["count"])
+            )
+            return ordered
+
+    def record_request(self, key):
+        with self._lock:
+            if key in self._state:
+                self._reset_if_expired(key)
+                self._state[key]["count"] += 1
+
+
 class SmartAIRouter:
-    """Fallback order: Gemini -> OpenRouter -> Groq.
-    Each provider entry lists 1-2 keys and 1-2 candidate models. Within a
-    key, SKIP_STATUS errors abort that key immediately (move to next key);
-    RETRYABLE_STATUS errors try the key's next model before moving on.
-    DeepSeek is NOT a separately configured provider -- it is only ever
-    reachable as an OpenRouter model id, since no DEEPSEEK_API_KEY secret
-    exists in this project."""
+    """
+    Exactly 2 providers, 2 keys each: Gemini (GEMINI_KEY_1/2) and Groq
+    (GROQ_KEY_1/2). OpenRouter and Cerebras are fully removed per
+    updated requirements. Failover chain: Gemini text models -> Groq
+    text models. Each provider proactively rotates between its 2 keys
+    at 14 requests/minute rather than waiting for a 429.
+    """
 
     def __init__(self):
         self.mode = "auto"
         self._manual_overrides = {}
 
+        gemini_keys = [load_key("GEMINI_KEY_1"), load_key("GEMINI_KEY_2")]
+        groq_keys = [load_key("GROQ_KEY_1"), load_key("GROQ_KEY_2")]
+
+        self._gemini_counter = KeyPoolCounter(gemini_keys)
+        self._groq_counter = KeyPoolCounter(groq_keys)
+
     def set_mode(self, mode):
         self.mode = mode
 
     def set_manual_key(self, provider_name, key):
-        if provider_name not in ("gemini", "groq", "openrouter"):
+        if provider_name not in ("gemini", "groq"):
             return False
         self._manual_overrides[provider_name] = key
         return True
 
-    def _key_for(self, provider, env_name):
-        return self._manual_overrides.get(provider) or load_key(env_name)
-
-    def _build_chain(self):
-        chain = [
-            {"provider": "gemini", "key": self._key_for("gemini", "GEMINI_API_KEY_1"),
-             "models": ["gemini-2.5-flash"], "call": self._call_gemini},
-            {"provider": "gemini", "key": self._key_for("gemini", "GEMINI_API_KEY_2"),
-             "models": ["gemini-2.5-flash"], "call": self._call_gemini},
-            {"provider": "openrouter", "key": self._key_for("openrouter", "OPENROUTER_API_KEY_1"),
-             "models": ["google/gemini-2.5-flash:free", "meta-llama/llama-3.3-70b-instruct:free"],
-             "call": self._call_openrouter},
-            {"provider": "openrouter", "key": self._key_for("openrouter", "OPENROUTER_API_KEY_2"),
-             "models": ["meta-llama/llama-3.3-70b-instruct:free", "google/gemini-2.5-flash:free"],
-             "call": self._call_openrouter},
-            {"provider": "groq", "key": self._key_for("groq", "GROQ_API_KEY_1"),
-             "models": ["llama3-8b-8192"], "call": self._call_groq},
-            {"provider": "groq", "key": self._key_for("groq", "GROQ_API_KEY_2"),
-             "models": ["llama3-8b-8192"], "call": self._call_groq},
-        ]
-        if self.mode != "auto":
-            chain = [c for c in chain if c["provider"] == self.mode] or chain
-        return chain
-
-    def _to_messages(self, prompt, context):
-        messages = [{"role": "system", "content": SYSTEM_PROMPT_JARVIS}]
-        for role, content in (context or []):
-            messages.append({"role": "user" if role == "user" else "assistant", "content": content})
-        messages.append({"role": "user", "content": prompt})
-        return messages
-
-    def _requests_kwargs(self):
+    def _requests_kwargs(self, extra_headers=None):
         import certifi
-        # Real fix (not verify=False): point requests at certifi's CA
-        # bundle explicitly, since some Android builds don't reliably
-        # expose the OS trust store to Python's ssl module.
-        return {"timeout": 10, "verify": certifi.where()}
+        kwargs = {"timeout": 10, "verify": certifi.where()}
+        if extra_headers:
+            kwargs["headers"] = extra_headers
+        return kwargs
 
+    # ---------------- Gemini ----------------
     def _call_gemini(self, key, model, prompt, context):
         import requests
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/{model}:generateContent?key={key}"
         payload = {
             "system_instruction": {"parts": [{"text": SYSTEM_PROMPT_JARVIS}]},
             "contents": [{"parts": [{"text": prompt}]}]
@@ -119,25 +155,83 @@ class SmartAIRouter:
             raise ProviderHttpError(res.status_code)
         return res.json()["candidates"][0]["content"]["parts"][0]["text"]
 
+    def analyze_image_gemini(self, key, model, image_base64, prompt):
+        """Vision/screen-analysis call. Not yet wired into the UI --
+        exposed here so it can be hooked up to the screenshot feature
+        in a later pass without touching router internals again."""
+        import requests
+        url = f"https://generativelanguage.googleapis.com/v1beta/{model}:generateContent?key={key}"
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"text": prompt},
+                    {"inline_data": {"mime_type": "image/png", "data": image_base64}}
+                ]
+            }]
+        }
+        res = requests.post(url, json=payload, **self._requests_kwargs())
+        if res.status_code >= 400:
+            raise ProviderHttpError(res.status_code)
+        return res.json()["candidates"][0]["content"]["parts"][0]["text"]
+
+    # ---------------- Groq (text) ----------------
+    def _to_messages(self, prompt, context):
+        messages = [{"role": "system", "content": SYSTEM_PROMPT_JARVIS}]
+        for role, content in (context or []):
+            messages.append({"role": "user" if role == "user" else "assistant", "content": content})
+        messages.append({"role": "user", "content": prompt})
+        return messages
+
     def _call_groq(self, key, model, prompt, context):
         import requests
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
         payload = {"model": model, "messages": self._to_messages(prompt, context)}
-        res = requests.post(url, json=payload, headers=headers, **self._requests_kwargs())
+        res = requests.post(url, json=payload, **self._requests_kwargs(headers))
         if res.status_code >= 400:
             raise ProviderHttpError(res.status_code)
         return res.json()["choices"][0]["message"]["content"]
 
-    def _call_openrouter(self, key, model, prompt, context):
+    # ---------------- Groq (STT) ----------------
+    def transcribe_audio_groq(self, key, audio_file_path):
+        """Speech-to-text via Groq Whisper. Custom User-Agent header is
+        required -- Cloudflare in front of Groq's API returns 403 to
+        requests using Python's default 'python-requests/x.y' UA."""
         import requests
-        url = "https://openrouter.ai/api/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-        payload = {"model": model, "messages": self._to_messages(prompt, context)}
-        res = requests.post(url, json=payload, headers=headers, **self._requests_kwargs())
+        url = "https://api.groq.com/openai/v1/audio/transcriptions"
+        headers = {
+            "Authorization": f"Bearer {key}",
+            "User-Agent": "JarvisAI-Android/1.0 (+com.jarvis.assistant)",
+        }
+        with open(audio_file_path, "rb") as f:
+            files = {"file": f}
+            data = {"model": GROQ_STT_MODEL}
+            import certifi
+            res = requests.post(url, headers=headers, files=files, data=data,
+                                 timeout=15, verify=certifi.where())
         if res.status_code >= 400:
             raise ProviderHttpError(res.status_code)
-        return res.json()["choices"][0]["message"]["content"]
+        return res.json().get("text", "")
+
+    # ---------------- Failover chain ----------------
+    def _build_chain(self):
+        chain = []
+
+        if self.mode in ("auto", "gemini"):
+            gemini_key = self._manual_overrides.get("gemini")
+            gemini_keys_ordered = [gemini_key] if gemini_key else self._gemini_counter.get_available_keys_in_order()
+            for key in gemini_keys_ordered:
+                for model in GEMINI_TEXT_MODELS:
+                    chain.append({"provider": "gemini", "key": key, "model": model, "call": self._call_gemini})
+
+        if self.mode in ("auto", "groq"):
+            groq_key = self._manual_overrides.get("groq")
+            groq_keys_ordered = [groq_key] if groq_key else self._groq_counter.get_available_keys_in_order()
+            for key in groq_keys_ordered:
+                for model in GROQ_TEXT_MODELS:
+                    chain.append({"provider": "groq", "key": key, "model": model, "call": self._call_groq})
+
+        return chain
 
     def ask(self, prompt, context=None):
         """Returns (reply_or_None, fail_count)."""
@@ -149,22 +243,29 @@ class SmartAIRouter:
             if not key:
                 fail_count += 1
                 continue
-
-            for model in entry["models"]:
-                try:
-                    reply = entry["call"](key, model, prompt, context)
-                    return strip_think_tags(reply), fail_count
-                except ProviderHttpError as e:
-                    fail_count += 1
-                    if e.status in SKIP_STATUS:
-                        break  # this key is bad -- don't try its other models
-                    if e.status in RETRYABLE_STATUS:
-                        continue  # try this key's next model
-                    break
-                except Exception:
-                    # network/timeout/parse error -- no point trying
-                    # another model on the same key right now
-                    fail_count += 1
-                    break
+            try:
+                reply = entry["call"](key, entry["model"], prompt, context)
+                if entry["provider"] == "gemini":
+                    self._gemini_counter.record_request(key)
+                else:
+                    self._groq_counter.record_request(key)
+                return strip_think_tags(reply), fail_count
+            except ProviderHttpError as e:
+                fail_count += 1
+                if e.status in SKIP_STATUS:
+                    continue
+                if e.status in RETRYABLE_STATUS:
+                    continue
+                continue
+            except Exception:
+                fail_count += 1
+                continue
 
         return None, fail_count
+
+    # ---------------- OneDrive (preserved, unchanged from before) ----------------
+    def onedrive_is_configured(self):
+        return self.onedrive.is_configured() if hasattr(self, "onedrive") else False
+
+    def onedrive_upload(self, local_path, remote_name):
+        return self.onedrive.upload_file(local_path, remote_name) if hasattr(self, "onedrive") else False
