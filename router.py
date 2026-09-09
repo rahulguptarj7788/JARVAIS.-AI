@@ -120,8 +120,8 @@ class SmartAIRouter:
         self.mode = "auto"
         self._manual_overrides = {}
 
-        gemini_keys = [load_key("GEMINI_KEY_1"), load_key("GEMINI_KEY_2")]
-        groq_keys = [load_key("GROQ_KEY_1"), load_key("GROQ_KEY_2")]
+        gemini_keys = [load_key("GEMINI_API_KEY_1"), load_key("GEMINI_API_KEY_2")]
+        groq_keys = [load_key("GROQ_API_KEY_1"), load_key("GROQ_API_KEY_2")]
 
         self._gemini_counter = KeyPoolCounter(gemini_keys)
         self._groq_counter = KeyPoolCounter(groq_keys)
