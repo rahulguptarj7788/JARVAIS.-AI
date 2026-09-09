@@ -55,24 +55,14 @@ jobs:
           pip cache purge || true
           find / -name "__pycache__" -path "*pip*" -exec rm -rf {} + 2>/dev/null || true
 
-      - name: Create pip constraint file
-        run: |
-          echo "pip==24.0" > /home/runner/pip-constraints.txt
-
       - name: Generate app_keys.json from secrets
         run: |
           cat > app_keys.json << EOF
           {
-            "GROQ_API_KEY_1": "${{ secrets.GROQ_API_KEY_1 }}",
-            "GROQ_API_KEY_2": "${{ secrets.GROQ_API_KEY_2 }}",
-            "GEMINI_API_KEY_1": "${{ secrets.GEMINI_API_KEY_1 }}",
-            "GEMINI_API_KEY_2": "${{ secrets.GEMINI_API_KEY_2 }}",
-            "OPENROUTER_API_KEY_1": "${{ secrets.OPENROUTER_API_KEY_1 }}",
-            "OPENROUTER_API_KEY_2": "${{ secrets.OPENROUTER_API_KEY_2 }}",
-            "CEREBRAS_API_KEY_1": "${{ secrets.CEREBRAS_API_KEY_1 }}",
-            "CEREBRAS_API_KEY_2": "${{ secrets.CEREBRAS_API_KEY_2 }}",
-            "PIXABAY_API_KEY": "${{ secrets.PIXABAY_API_KEY }}",
-            "PEXELS_API_KEY": "${{ secrets.PEXELS_API_KEY }}",
+            "GEMINI_KEY_1": "${{ secrets.GEMINI_API_KEY_1 }}",
+            "GEMINI_KEY_2": "${{ secrets.GEMINI_API_KEY_2 }}",
+            "GROQ_KEY_1": "${{ secrets.GROQ_API_KEY_1 }}",
+            "GROQ_KEY_2": "${{ secrets.GROQ_API_KEY_2 }}",
             "ONEDRIVE_CLIENT_ID": "${{ secrets.ONEDRIVE_CLIENT_ID }}",
             "ONEDRIVE_CLIENT_SECRET": "${{ secrets.ONEDRIVE_CLIENT_SECRET }}",
             "ONEDRIVE_REFRESH_TOKEN": "${{ secrets.ONEDRIVE_REFRESH_TOKEN }}"
@@ -85,21 +75,14 @@ jobs:
           PIP_PROGRESS_BAR: "off"
           PIP_NO_INPUT: "1"
           PIP_DISABLE_PIP_VERSION_CHECK: "1"
-          PIP_CONSTRAINT: /home/runner/pip-constraints.txt
           PYTHONNOUSERSITE: "1"
           PYTHONPATH: ""
           ANDROID_HOME: /usr/local/lib/android/sdk
           ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-          GROQ_API_KEY_1: ${{ secrets.GROQ_API_KEY_1 }}
-          GROQ_API_KEY_2: ${{ secrets.GROQ_API_KEY_2 }}
-          GEMINI_API_KEY_1: ${{ secrets.GEMINI_API_KEY_1 }}
-          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
-          OPENROUTER_API_KEY_1: ${{ secrets.OPENROUTER_API_KEY_1 }}
-          OPENROUTER_API_KEY_2: ${{ secrets.OPENROUTER_API_KEY_2 }}
-          CEREBRAS_API_KEY_1: ${{ secrets.CEREBRAS_API_KEY_1 }}
-          CEREBRAS_API_KEY_2: ${{ secrets.CEREBRAS_API_KEY_2 }}
-          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
-          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          GEMINI_KEY_1: ${{ secrets.GEMINI_API_KEY_1 }}
+          GEMINI_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
+          GROQ_KEY_1: ${{ secrets.GROQ_API_KEY_1 }}
+          GROQ_KEY_2: ${{ secrets.GROQ_API_KEY_2 }}
           ONEDRIVE_CLIENT_ID: ${{ secrets.ONEDRIVE_CLIENT_ID }}
           ONEDRIVE_CLIENT_SECRET: ${{ secrets.ONEDRIVE_CLIENT_SECRET }}
           ONEDRIVE_REFRESH_TOKEN: ${{ secrets.ONEDRIVE_REFRESH_TOKEN }}
