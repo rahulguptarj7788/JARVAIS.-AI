@@ -31,9 +31,9 @@ jobs:
 
       - name: Install Buildozer
         run: |
-          python3 -m pip install --no-cache-dir "pip==24.0"
-          pip install --no-cache-dir setuptools wheel
-          pip install --no-cache-dir "buildozer==1.5.0" "cython<3.0.0"
+          python3 -m pip install --no-cache-dir "pip==23.3.1"
+          pip install --no-cache-dir "setuptools==68.2.2" "wheel==0.41.2"
+          pip install --no-cache-dir "buildozer==1.5.0" "cython==0.29.33"
           pip install --no-cache-dir "https://github.com/kivy/python-for-android/archive/master.zip"
 
       - name: Accept licenses and install SDK components
@@ -55,6 +55,10 @@ jobs:
           pip cache purge || true
           find / -name "__pycache__" -path "*pip*" -exec rm -rf {} + 2>/dev/null || true
 
+      - name: Create pip constraint file (locks pip inside p4a's inner venv too)
+        run: |
+          echo "pip==23.3.1" > /home/runner/pip-constraints.txt
+
       - name: Generate app_keys.json from secrets
         run: |
           cat > app_keys.json << EOF
@@ -75,6 +79,7 @@ jobs:
           PIP_PROGRESS_BAR: "off"
           PIP_NO_INPUT: "1"
           PIP_DISABLE_PIP_VERSION_CHECK: "1"
+          PIP_CONSTRAINT: /home/runner/pip-constraints.txt
           PYTHONNOUSERSITE: "1"
           PYTHONPATH: ""
           ANDROID_HOME: /usr/local/lib/android/sdk
