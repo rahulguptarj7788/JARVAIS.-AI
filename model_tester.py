@@ -1,31 +1,26 @@
 import os
 import time
 import csv
-import base64
-import io
-from datetime import datetime
+import json
+import threading
+from datetime import datetime, timedelta
 
 import requests
 
-# ============================================================
-# CREDENTIALS (do not remove -- fill these via environment
-# variables or Colab's `userdata` / secrets manager)
-# ============================================================
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY_1", "")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY_1", "")
 
 GOOGLE_DRIVE_CLIENT_ID = os.environ.get("GOOGLE_DRIVE_CLIENT_ID", "")
 GOOGLE_DRIVE_CLIENT_SECRET = os.environ.get("GOOGLE_DRIVE_CLIENT_SECRET", "")
 GOOGLE_DRIVE_REFRESH_TOKEN = os.environ.get("GOOGLE_DRIVE_REFRESH_TOKEN", "")
-GOOGLE_DRIVE_FOLDER_ID = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "")  # optional
+GOOGLE_DRIVE_FOLDER_ID = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "")
 
 TEST_PROMPT = "Reply with a short one-line confirmation that you received this test message."
 DELAY_SECONDS = 120
+RESUME_WINDOW_HOURS = 24
 
-# ============================================================
-# TEST IMAGE (small 2x2 red PNG, base64) -- used as the
-# "screenshot" payload for multimodal test calls
-# ============================================================
+PROGRESS_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_progress.json")
+
 TEST_IMAGE_BASE64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR42mNk"
     "+A8EDAxUgFGVGIkGAA/YA/8B4L5cAAAAAElFTkSuQmCC"
@@ -63,11 +58,10 @@ GROQ_MODELS = [
     "meta-llama/llama-prompt-guard-2-22m", "openai/gpt-oss-safeguard-20b",
 ]
 
+ALL_MODELS = [("gemini", m) for m in GEMINI_MODELS] + [("groq", m) for m in GROQ_MODELS]
+TOTAL_MODELS = len(ALL_MODELS)
 
-# ============================================================
-# Google Drive uploader (OAuth refresh-token based, same
-# pattern as the app's existing OneDriveClient)
-# ============================================================
+
 class GoogleDriveClient:
     def __init__(self):
         self.client_id = GOOGLE_DRIVE_CLIENT_ID
@@ -94,34 +88,27 @@ class GoogleDriveClient:
             res.raise_for_status()
             self.access_token = res.json().get("access_token")
             return self.access_token
-        except Exception as e:
-            print(f"[Google Drive] Token refresh failed: {e}")
+        except Exception:
             return None
 
-    def upload_file(self, local_path, remote_name):
+    def upload_file(self, local_path, remote_name, mime_type="text/csv"):
         token = self.access_token or self.get_access_token()
         if not token:
-            print("[Google Drive] Not configured or token unavailable -- skipping upload.")
             return False
-
         metadata = {"name": remote_name}
         if self.folder_id:
             metadata["parents"] = [self.folder_id]
-
         try:
-            import json as _json
             boundary = "jarvis_test_upload_boundary"
             with open(local_path, "rb") as f:
                 file_data = f.read()
-
             body = (
                 f"--{boundary}\r\n"
                 f"Content-Type: application/json; charset=UTF-8\r\n\r\n"
-                f"{_json.dumps(metadata)}\r\n"
+                f"{json.dumps(metadata)}\r\n"
                 f"--{boundary}\r\n"
-                f"Content-Type: text/csv\r\n\r\n"
+                f"Content-Type: {mime_type}\r\n\r\n"
             ).encode("utf-8") + file_data + f"\r\n--{boundary}--".encode("utf-8")
-
             headers = {
                 "Authorization": f"Bearer {token}",
                 "Content-Type": f"multipart/related; boundary={boundary}",
@@ -130,21 +117,42 @@ class GoogleDriveClient:
                 "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
                 headers=headers, data=body, timeout=60
             )
-            if res.status_code in (200, 201):
-                print(f"[Google Drive] Uploaded '{remote_name}' successfully.")
-                return True
-            print(f"[Google Drive] Upload failed: HTTP {res.status_code} - {res.text[:200]}")
-            return False
-        except Exception as e:
-            print(f"[Google Drive] Upload error: {e}")
+            return res.status_code in (200, 201)
+        except Exception:
             return False
 
 
-# ============================================================
-# Model test calls
-# ============================================================
+def load_progress():
+    if not os.path.exists(PROGRESS_FILE_PATH):
+        return {}
+    try:
+        with open(PROGRESS_FILE_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_progress_entry(progress, model_key, entry):
+    progress[model_key] = entry
+    try:
+        with open(PROGRESS_FILE_PATH, "w", encoding="utf-8") as f:
+            json.dump(progress, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def is_recently_tested(entry):
+    if not entry:
+        return False
+    try:
+        tested_at = datetime.fromisoformat(entry.get("last_tested_at", ""))
+    except Exception:
+        return False
+    return (datetime.now() - tested_at) < timedelta(hours=RESUME_WINDOW_HOURS)
+
+
 def test_gemini_model(model_name):
-    """Single call, text + image together. Returns (status, detail)."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
     payload = {
         "contents": [{
@@ -165,7 +173,6 @@ def test_gemini_model(model_name):
 
         body_lower = res.text.lower()
         if res.status_code == 400 and ("image" in body_lower or "inline_data" in body_lower or "multimodal" in body_lower):
-            # Retry as text-only
             text_payload = {"contents": [{"parts": [{"text": TEST_PROMPT}]}]}
             res2 = requests.post(url, json=text_payload, timeout=30)
             if res2.status_code == 200:
@@ -178,8 +185,6 @@ def test_gemini_model(model_name):
 
 
 def test_groq_model(model_name):
-    """Single call, text-only (Groq chat models here are not vision
-    endpoints); errors are still caught so the script never crashes."""
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     payload = {"model": model_name, "messages": [{"role": "user", "content": TEST_PROMPT}]}
@@ -196,18 +201,56 @@ def test_groq_model(model_name):
         return "Error", str(e)[:200]
 
 
-# ============================================================
-# Main test loop
-# ============================================================
-def run_all_tests():
-    all_models = [("gemini", m) for m in GEMINI_MODELS] + [("groq", m) for m in GROQ_MODELS]
-    total = len(all_models)
-    results = []
+def save_results_csv(progress):
+    filename = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        f"jarvis_model_test_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    )
+    with open(filename, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["provider", "model_id", "status", "response_detail", "last_tested_at"])
+        writer.writeheader()
+        for model_key, entry in progress.items():
+            writer.writerow({
+                "provider": entry.get("provider", ""),
+                "model_id": entry.get("model_id", model_key),
+                "status": entry.get("status", ""),
+                "response_detail": entry.get("response_detail", ""),
+                "last_tested_at": entry.get("last_tested_at", ""),
+            })
+    return filename
 
-    print(f"Starting test of {total} models. Estimated time: ~{(total * DELAY_SECONDS) / 3600:.2f} hours.\n")
 
-    for idx, (provider, model_name) in enumerate(all_models, start=1):
-        print(f"[{idx}/{total}] Testing {provider}: {model_name} ...")
+def upload_final_artifacts(csv_path):
+    drive = GoogleDriveClient()
+    if not drive.is_configured():
+        return False, False
+    csv_ok = drive.upload_file(csv_path, os.path.basename(csv_path), mime_type="text/csv")
+    json_ok = drive.upload_file(PROGRESS_FILE_PATH, "test_progress.json", mime_type="application/json")
+    return csv_ok, json_ok
+
+
+def run_all_tests(progress_callback=None, stop_flag=None):
+    """
+    progress_callback(current_index, total, model_id, status, detail, percent)
+    is invoked after every single model test (including skipped ones).
+    stop_flag is an optional callable; if it returns True the loop exits
+    early (progress already saved incrementally, so it resumes cleanly).
+    """
+    progress = load_progress()
+
+    for idx, (provider, model_name) in enumerate(ALL_MODELS, start=1):
+        if stop_flag is not None and stop_flag():
+            break
+
+        model_key = f"{provider}:{model_name}"
+        existing_entry = progress.get(model_key)
+
+        if is_recently_tested(existing_entry):
+            percent = round((idx / TOTAL_MODELS) * 100, 1)
+            if progress_callback:
+                progress_callback(idx, TOTAL_MODELS, model_name, existing_entry.get("status", "Skipped"),
+                                   existing_entry.get("response_detail", ""), percent)
+            continue
 
         try:
             if provider == "gemini":
@@ -217,50 +260,43 @@ def run_all_tests():
         except Exception as e:
             status, detail = "Error", f"Unhandled exception: {str(e)[:200]}"
 
-        print(f"    -> {status}: {detail[:100]}")
-        results.append({
+        entry = {
+            "model_id": model_name,
             "provider": provider,
-            "model_name": model_name,
+            "last_tested_at": datetime.now().isoformat(),
             "status": status,
-            "detail": detail,
-            "tested_at": datetime.now().isoformat(),
-        })
+            "response_detail": detail,
+        }
+        save_progress_entry(progress, model_key, entry)
 
-        if idx < total:
-            print(f"    Waiting {DELAY_SECONDS}s before next call...\n")
-            time.sleep(DELAY_SECONDS)
+        percent = round((idx / TOTAL_MODELS) * 100, 1)
+        if progress_callback:
+            progress_callback(idx, TOTAL_MODELS, model_name, status, detail, percent)
 
-    return results
+        if idx < TOTAL_MODELS:
+            waited = 0
+            while waited < DELAY_SECONDS:
+                if stop_flag is not None and stop_flag():
+                    break
+                time.sleep(1)
+                waited += 1
+
+    csv_path = save_results_csv(progress)
+    upload_final_artifacts(csv_path)
+    return csv_path
 
 
-def save_results_csv(results):
-    filename = f"jarvis_model_test_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    with open(filename, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["provider", "model_name", "status", "detail", "tested_at"])
-        writer.writeheader()
-        writer.writerows(results)
-    print(f"\nResults saved locally to: {filename}")
-    return filename
-
-
-def main():
-    if not GEMINI_API_KEY:
-        print("WARNING: GEMINI_API_KEY not set -- all Gemini calls will fail.")
-    if not GROQ_API_KEY:
-        print("WARNING: GROQ_API_KEY not set -- all Groq calls will fail.")
-
-    results = run_all_tests()
-    csv_path = save_results_csv(results)
-
-    drive = GoogleDriveClient()
-    if drive.is_configured():
-        drive.upload_file(csv_path, os.path.basename(csv_path))
-    else:
-        print("[Google Drive] Client ID/Secret/Refresh Token not set -- skipping Drive upload. "
-              "CSV is still saved locally above.")
-
-    print("\nDone.")
+def run_in_background_thread(progress_callback=None, stop_flag=None):
+    t = threading.Thread(target=run_all_tests, kwargs={
+        "progress_callback": progress_callback,
+        "stop_flag": stop_flag,
+    }, daemon=True, name="ModelTesterThread")
+    t.start()
+    return t
 
 
 if __name__ == "__main__":
-    main()
+    def _print_progress(idx, total, model_name, status, detail, percent):
+        print(f"[{idx}/{total}] {model_name} -> {status} ({percent}%)")
+
+    run_all_tests(progress_callback=_print_progress)
