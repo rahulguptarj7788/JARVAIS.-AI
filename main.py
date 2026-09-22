@@ -1,12 +1,15 @@
 import os
+import sys
 import threading
 import time
+import traceback
 from datetime import datetime
 from kivy import platform
 from kivy.app import App
 from kivy.metrics import dp
 from kivy.core.window import Window
 from kivy.animation import Animation
+from kivy.base import ExceptionHandler, ExceptionManager
 from kivy.uix.screenmanager import ScreenManager, Screen
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.floatlayout import FloatLayout
@@ -21,14 +24,15 @@ from kivy.uix.scrollview import ScrollView
 from kivy.uix.image import Image
 from kivy.uix.behaviors import ButtonBehavior
 from kivy.uix.widget import Widget
+from kivy.uix.progressbar import ProgressBar
 from kivy.clock import Clock
 from kivy.graphics import Color, Rectangle, RoundedRectangle
 from kivy.core.text import LabelBase
-import traceback
 
 from router import SmartAIRouter
 from db import ChatDatabase
 import hardware_controller as hw
+import model_tester
 
 Window.softinput_mode = 'below_target'
 
@@ -61,22 +65,63 @@ def hindi_font():
 
 
 def request_runtime_permissions():
-    """Actually prompts the user for RECORD_AUDIO at runtime (Android 6+).
-    Previously the app only opened a Settings screen and never issued the
-    real system permission dialog -- that gap is fixed here."""
     if platform != "android":
         return
     try:
         from android.permissions import request_permissions, Permission
-        request_permissions([
-            Permission.RECORD_AUDIO,
-            Permission.POST_NOTIFICATIONS,
-        ])
+        request_permissions([Permission.RECORD_AUDIO, Permission.POST_NOTIFICATIONS])
+    except Exception:
+        _log_crash("request_runtime_permissions", traceback.format_exc())
+
+
+_CRASH_LOG_PATH = "jarvis_last_crash.txt"
+
+
+def _log_crash(source, trace_text):
+    try:
+        with open(_CRASH_LOG_PATH, "w", encoding="utf-8") as f:
+            f.write(f"SOURCE: {source}\n\n{trace_text}")
     except Exception:
         pass
+    print(f"[JARVIS CRASH] {source}\n{trace_text}")
 
 
-# ---------------- Login Screen ----------------
+def _show_fatal_error(source, trace_text):
+    _log_crash(source, trace_text)
+    app = App.get_running_app()
+    if app is not None and hasattr(app, "sm"):
+        def _switch(dt):
+            try:
+                app.sm.clear_widgets()
+                app.sm.add_widget(ErrorScreen(f"[{source}]\n\n{trace_text}", name='error'))
+                app.sm.current = 'error'
+            except Exception:
+                pass
+        Clock.schedule_once(_switch, 0)
+
+
+class JarvisKivyExceptionHandler(ExceptionHandler):
+    def handle_exception(self, inst):
+        _show_fatal_error("Kivy event loop", "".join(traceback.format_exception(type(inst), inst, inst.__traceback__)))
+        return ExceptionManager.PASS
+
+
+def _sys_excepthook(exc_type, exc_value, exc_tb):
+    trace_text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+    _show_fatal_error("Main thread", trace_text)
+
+
+def _threading_excepthook(args):
+    trace_text = "".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback))
+    _show_fatal_error(f"Thread: {args.thread.name}", trace_text)
+
+
+sys.excepthook = _sys_excepthook
+if hasattr(threading, "excepthook"):
+    threading.excepthook = _threading_excepthook
+ExceptionManager.add_handler(JarvisKivyExceptionHandler())
+
+
 class LoginScreen(Screen):
     def __init__(self, expected_pass, on_success, **kwargs):
         super().__init__(**kwargs)
@@ -199,14 +244,20 @@ class MainScreen(Screen):
     DRAWER_WIDTH = dp(260)
     WAKE_POLL_INTERVAL = 1.5
 
-    def __init__(self, on_settings, **kwargs):
+    def __init__(self, on_settings, on_model_tester, **kwargs):
         super().__init__(**kwargs)
-        self.db = ChatDatabase()
-        self.router = SmartAIRouter()
+        try:
+            self.db = ChatDatabase()
+            self.router = SmartAIRouter()
+        except Exception:
+            _log_crash("MainScreen.__init__ (db/router)", traceback.format_exc())
+            self.db = None
+            self.router = None
+
         self.on_settings = on_settings
+        self.on_model_tester = on_model_tester
         self.drawer_open = False
         self.tts_muted = False
-        self._wake_poll_thread = None
         self._wake_poll_running = False
 
         outer = FloatLayout()
@@ -237,7 +288,7 @@ class MainScreen(Screen):
 
         content.add_widget(Widget(size_hint=(1, None), height=dp(20)))
 
-        orb_wrap = AnchorLayout(size_hint=(1, 0.42))
+        orb_wrap = AnchorLayout(size_hint=(1, 0.38))
         orb_btn = OrbButton(on_tap=self.trigger_voice_listening, size_hint=(0.94, 1))
         orb_wrap.add_widget(orb_btn)
         content.add_widget(orb_wrap)
@@ -309,41 +360,61 @@ class MainScreen(Screen):
 
         self.drawer.add_widget(Label(text="Model", font_size='13sp', color=(0.7, 0.6, 0.85, 1),
                                       size_hint=(1, None), height=22, halign='left'))
-        model_col = BoxLayout(orientation='vertical', size_hint=(1, None), height=180, spacing=6)
-        for mode_name in ["auto", "gemini", "openrouter", "groq"]:
+        model_col = BoxLayout(orientation='vertical', size_hint=(1, None), height=140, spacing=6)
+        for mode_name in ["auto", "gemini", "groq"]:
             tb = ToggleButton(text=mode_name.capitalize(), group='model_mode',
                                state='down' if mode_name == 'auto' else 'normal',
                                background_color=ACCENT_PURPLE, size_hint=(1, None), height=38)
-            tb.bind(on_release=lambda inst, m=mode_name: self.router.set_mode(m))
+            if self.router:
+                tb.bind(on_release=lambda inst, m=mode_name: self.router.set_mode(m))
             model_col.add_widget(tb)
         self.drawer.add_widget(model_col)
+
+        self.onedrive_status_label = Label(
+            text="OneDrive: --", font_size='13sp', color=(0.8, 0.75, 0.9, 1),
+            size_hint=(1, None), height=50, halign='left', valign='top'
+        )
+        self.onedrive_status_label.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
+        self.drawer.add_widget(self.onedrive_status_label)
+
+        model_test_btn = Button(text="Model Tester", size_hint=(1, None), height=42,
+                                 background_color=ACCENT_PURPLE)
+        model_test_btn.bind(on_release=lambda inst: self.on_model_tester())
+        self.drawer.add_widget(model_test_btn)
 
         self.drawer.add_widget(Widget(size_hint=(1, 1)))
         outer.add_widget(self.drawer)
         self.add_widget(outer)
 
     def on_enter(self):
-        history = self.db.get_recent_messages(limit=20)
-        for role, content in history:
-            color = "#4fd1ff" if role == "user" else "#b06bffff"
-            label = "You" if role == "user" else "Jarvis"
-            self.chat_display.text += f"\n[color={color}]{label}:[/color] {content}\n"
+        if not self.db:
+            return
+        try:
+            history = self.db.get_recent_messages(limit=20)
+            for role, content in history:
+                color = "#4fd1ff" if role == "user" else "#b06bffff"
+                label = "You" if role == "user" else "Jarvis"
+                self.chat_display.text += f"\n[color={color}]{label}:[/color] {content}\n"
+        except Exception:
+            _log_crash("on_enter (load history)", traceback.format_exc())
 
-        # Poll on a background thread (not the UI thread) to avoid
-        # doing disk I/O on every Clock tick; only the result is
-        # marshaled back to the UI thread via Clock.schedule_once.
         self._wake_poll_running = True
-        self._wake_poll_thread = threading.Thread(target=self._wake_poll_loop, daemon=True)
-        self._wake_poll_thread.start()
+        threading.Thread(target=self._wake_poll_loop, daemon=True, name="WakePollThread").start()
+
+        if self.router:
+            self.refresh_onedrive_status()
 
     def on_leave(self):
         self._wake_poll_running = False
 
     def _wake_poll_loop(self):
         while self._wake_poll_running:
-            event_text = self.db.pop_pending_wake_event()
-            if event_text:
-                Clock.schedule_once(lambda dt, t=event_text: self._on_wake_event(t))
+            try:
+                event_text = self.db.pop_pending_wake_event() if self.db else None
+                if event_text:
+                    Clock.schedule_once(lambda dt, t=event_text: self._on_wake_event(t))
+            except Exception:
+                _log_crash("wake_poll_loop", traceback.format_exc())
             time.sleep(self.WAKE_POLL_INTERVAL)
 
     def _on_wake_event(self, event_text):
@@ -370,6 +441,14 @@ class MainScreen(Screen):
         target_x = 0 if not self.drawer_open else -self.DRAWER_WIDTH
         Animation(x=target_x, d=0.25, t='out_cubic').start(self.drawer)
         self.drawer_open = not self.drawer_open
+        if self.drawer_open:
+            self.refresh_onedrive_status()
+
+    def refresh_onedrive_status(self):
+        if not self.router:
+            return
+        status = "Connected" if self.router.onedrive_is_configured() else "Not Configured"
+        self.onedrive_status_label.text = f"OneDrive: {status}"
 
     def trigger_voice_listening(self):
         hw.play_activation_chime()
@@ -388,12 +467,14 @@ class MainScreen(Screen):
 
     def _reply_direct(self, msg):
         self.chat_display.text += f"[color=#b06bffff]Jarvis:[/color] {msg}\n"
-        self.db.save_message("assistant", msg)
+        if self.db:
+            self.db.save_message("assistant", msg)
         self._speak(msg)
 
     def process_command(self, text):
         self.chat_display.text += f"\n[color=#4fd1ff]You:[/color] {text}\n"
-        self.db.save_message("user", text)
+        if self.db:
+            self.db.save_message("user", text)
 
         lower = text.lower()
         if any(p in lower for p in ["go to home screen", "minimize apps", "apps close karo", "होम स्क्रीन"]):
@@ -413,8 +494,12 @@ class MainScreen(Screen):
             self.handle_set_api(text)
             return
 
+        if not self.router:
+            self._reply_direct("Router लोड नहीं हुआ, यह सुविधा अभी उपलब्ध नहीं है।")
+            return
+
         self.chat_display.text += "प्रोसेसिंग..."
-        threading.Thread(target=self._async_process, args=(text,), daemon=True).start()
+        threading.Thread(target=self._async_process, args=(text,), daemon=True, name="AIRouterThread").start()
 
     def handle_set_api(self, text):
         parts = text.split(maxsplit=3)
@@ -422,13 +507,17 @@ class MainScreen(Screen):
             self.chat_display.text += "\n[color=#b06bffff]System:[/color] प्रारूप: set api <provider> <key>\n"
             return
         provider, key = parts[2].lower(), parts[3]
-        ok = self.router.set_manual_key(provider, key)
+        ok = self.router.set_manual_key(provider, key) if self.router else False
         msg = f"{provider} API key सेट हो गई (इस सेशन के लिए)।" if ok else f"अज्ञात provider: {provider}"
         self.chat_display.text += f"\n[color=#b06bffff]System:[/color] {msg}\n"
 
     def _async_process(self, text):
-        context = self.db.get_recent_messages(limit=6)
-        reply, fail_count = self.router.ask(text, context=context)
+        try:
+            context = self.db.get_recent_messages(limit=6) if self.db else []
+            reply, fail_count = self.router.ask(text, context=context)
+        except Exception:
+            _log_crash("_async_process", traceback.format_exc())
+            reply, fail_count = None, 0
         Clock.schedule_once(lambda dt: self._update_reply(reply, fail_count))
 
     def _update_reply(self, reply, fail_count):
@@ -438,12 +527,14 @@ class MainScreen(Screen):
         if reply is None:
             msg = "सभी API providers विफल रहे।"
             self.chat_display.text += f"\n[color=#ff5c5c]Jarvis:[/color] {msg}\n"
-            self.db.save_message("assistant", msg)
+            if self.db:
+                self.db.save_message("assistant", msg)
             self._speak(msg)
             return
 
         self.chat_display.text += f"\n[color=#b06bffff]Jarvis:[/color] {reply}\n"
-        self.db.save_message("assistant", reply)
+        if self.db:
+            self.db.save_message("assistant", reply)
         self._speak(reply)
         if fail_count > 0:
             self.chat_display.text += f"[color=#888888][size=11]{{Logs: {fail_count} provider(s) failed before success}}[/size][/color]\n"
@@ -451,6 +542,106 @@ class MainScreen(Screen):
     def handle_assist_intent(self, spoken_text):
         if spoken_text:
             self.process_command(spoken_text)
+
+
+class ModelTesterScreen(Screen):
+    def __init__(self, on_back, **kwargs):
+        super().__init__(**kwargs)
+        self._stop_requested = False
+        self._thread = None
+
+        root = BoxLayout(orientation='vertical', padding=20, spacing=14)
+        with root.canvas.before:
+            Color(*BG_DARK)
+            self._bg = Rectangle(pos=root.pos, size=root.size)
+        root.bind(pos=self._sync_bg, size=self._sync_bg)
+
+        root.add_widget(Label(text="Model Tester", font_name=hindi_font(), color=(0.8, 0.7, 1, 1),
+                               font_size='20sp', size_hint=(1, None), height=40))
+
+        self.progress_label = Label(
+            text=f"[0/{model_tester.TOTAL_MODELS}] Not started",
+            font_size='15sp', color=(1, 1, 1, 1), size_hint=(1, None), height=40
+        )
+        root.add_widget(self.progress_label)
+
+        self.percent_label = Label(
+            text="0% Completed", font_size='14sp', color=(0.7, 0.9, 0.7, 1),
+            size_hint=(1, None), height=30
+        )
+        root.add_widget(self.percent_label)
+
+        self.progress_bar = ProgressBar(max=100, value=0, size_hint=(1, None), height=20)
+        root.add_widget(self.progress_bar)
+
+        self.status_label = Label(
+            text="Status: --", font_size='13sp', color=(0.85, 0.8, 0.95, 1),
+            size_hint=(1, None), height=30
+        )
+        root.add_widget(self.status_label)
+
+        self.detail_label = Label(
+            text="", font_size='12sp', color=(0.7, 0.65, 0.8, 1),
+            size_hint=(1, None), height=60, halign='left', valign='top'
+        )
+        self.detail_label.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
+        root.add_widget(self.detail_label)
+
+        btn_row = BoxLayout(orientation='horizontal', size_hint=(1, None), height=50, spacing=10)
+        start_btn = Button(text="Start / Resume", background_color=ACCENT_PURPLE)
+        start_btn.bind(on_release=lambda inst: self.start_testing())
+        btn_row.add_widget(start_btn)
+
+        stop_btn = Button(text="Stop", background_color=(0.6, 0.2, 0.2, 1))
+        stop_btn.bind(on_release=lambda inst: self.stop_testing())
+        btn_row.add_widget(stop_btn)
+        root.add_widget(btn_row)
+
+        root.add_widget(Widget(size_hint=(1, 1)))
+
+        back_btn = Button(text="Back", size_hint=(1, None), height=50, background_color=BG_PANEL)
+        back_btn.bind(on_release=lambda inst: on_back())
+        root.add_widget(back_btn)
+        self.add_widget(root)
+
+        self._load_existing_progress()
+
+    def _load_existing_progress(self):
+        progress = model_tester.load_progress()
+        tested_count = 0
+        for entry in progress.values():
+            if model_tester.is_recently_tested(entry):
+                tested_count += 1
+        percent = round((tested_count / model_tester.TOTAL_MODELS) * 100, 1) if model_tester.TOTAL_MODELS else 0
+        self.progress_label.text = f"[{tested_count}/{model_tester.TOTAL_MODELS}] Resumable"
+        self.percent_label.text = f"{percent}% Completed"
+        self.progress_bar.value = percent
+
+    def start_testing(self):
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop_requested = False
+        self._thread = model_tester.run_in_background_thread(
+            progress_callback=self._on_progress_from_thread,
+            stop_flag=lambda: self._stop_requested,
+        )
+
+    def stop_testing(self):
+        self._stop_requested = True
+
+    def _on_progress_from_thread(self, idx, total, model_name, status, detail, percent):
+        Clock.schedule_once(lambda dt: self._update_progress_ui(idx, total, model_name, status, detail, percent))
+
+    def _update_progress_ui(self, idx, total, model_name, status, detail, percent):
+        self.progress_label.text = f"[{idx}/{total}] Testing Model: {model_name}"
+        self.percent_label.text = f"{percent}% Completed"
+        self.progress_bar.value = percent
+        self.status_label.text = f"Status: {status}"
+        self.detail_label.text = str(detail)[:180]
+
+    def _sync_bg(self, instance, value):
+        self._bg.pos = instance.pos
+        self._bg.size = instance.size
 
 
 class SettingsScreen(Screen):
@@ -527,8 +718,8 @@ class ErrorScreen(Screen):
         root.bind(pos=self._sync_bg, size=self._sync_bg)
 
         scroll = ScrollView(size_hint=(1, 1))
-        lbl = Label(text="STARTUP ERROR:\n\n" + error_text, color=(1, 0.7, 0.7, 1),
-                    font_size='13sp', size_hint=(1, None), halign='left', valign='top')
+        lbl = Label(text="APP ERROR (caught, not crashed):\n\n" + error_text, color=(1, 0.7, 0.7, 1),
+                    font_size='12sp', size_hint=(1, None), halign='left', valign='top')
         lbl.bind(
             width=lambda inst, val: setattr(inst, 'text_size', (val, None)),
             texture_size=lambda inst, val: setattr(inst, 'height', val[1])
@@ -548,14 +739,17 @@ class JarvisApp(App):
         sm = ScreenManager()
         try:
             login = LoginScreen(APP_PASS, on_success=self.go_main, name='login')
-            self.main_screen = MainScreen(on_settings=self.go_settings_lock, name='main')
+            self.main_screen = MainScreen(on_settings=self.go_settings_lock,
+                                           on_model_tester=self.go_model_tester, name='main')
             settings_lock = LoginScreen(SETTINGS_PASS, on_success=self.go_settings, name='settings_lock')
             settings_screen = SettingsScreen(on_back=self.go_main, main_screen_ref=self.main_screen, name='settings')
+            model_tester_screen = ModelTesterScreen(on_back=self.go_main, name='model_tester')
 
             sm.add_widget(login)
             sm.add_widget(self.main_screen)
             sm.add_widget(settings_lock)
             sm.add_widget(settings_screen)
+            sm.add_widget(model_tester_screen)
         except Exception:
             sm.clear_widgets()
             sm.add_widget(ErrorScreen(traceback.format_exc(), name='error'))
@@ -578,7 +772,7 @@ class JarvisApp(App):
                 spoken = extras.getString("android.intent.extra.ASSIST_CONTEXT") if extras else None
                 Clock.schedule_once(lambda dt: self.main_screen.handle_assist_intent(spoken or "असिस्ट खोला गया"))
         except Exception:
-            pass
+            _log_crash("_check_assist_intent", traceback.format_exc())
 
     def go_main(self):
         self.sm.current = 'main'
@@ -588,6 +782,9 @@ class JarvisApp(App):
 
     def go_settings(self):
         self.sm.current = 'settings'
+
+    def go_model_tester(self):
+        self.sm.current = 'model_tester'
 
 
 if __name__ == "__main__":
